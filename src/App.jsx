@@ -1,14 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — YouTube Search + Firebase Queue (safe build) */
+/** Party DJ — YouTube Search + Firebase Queue (safe, snippet-friendly) **/
 
+// ---------- helpers ----------
 function useLocalSetting(key, initial = "") {
   const [v, setV] = useState(() => localStorage.getItem(key) ?? initial);
   useEffect(() => { localStorage.setItem(key, v ?? ""); }, [key, v]);
   return [v, setV];
 }
 
-// --- tiny loader for Firebase compat and YouTube Iframe API ---
 const firebaseCdn = {
   app: "https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js",
   db:  "https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js",
@@ -18,9 +18,7 @@ const YT_IFRAME_API = "https://www.youtube.com/iframe_api";
 function useScript(src) {
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
-    // If no src (null/empty), don't load anything
-    if (!src) { setLoaded(false); return; }
-
+    if (!src) { setLoaded(false); return; } // do nothing if not provided
     let el = document.querySelector(`script[src="${src}"]`);
     if (!el) {
       el = document.createElement("script");
@@ -48,12 +46,16 @@ function useYouTubeApi() {
   }, []);
   return ready;
 }
+
 const randomId = (n=4)=>Math.random().toString(36).slice(2,2+n).toUpperCase();
 
+/** Accepts either the raw JSON {…} OR a full snippet like:
+ * const firebaseConfig = { ... };
+ * returns a parsed object or null
+ */
 function parseFirebaseJson(str) {
   if (!str) return null;
   const t = String(str).trim();
-  // If user pasted the whole snippet, grab just the {...}
   let jsonText = t;
   if (!t.startsWith("{")) {
     const a = t.indexOf("{");
@@ -63,9 +65,9 @@ function parseFirebaseJson(str) {
   try { return JSON.parse(jsonText); } catch { return null; }
 }
 
-
+// ---------- app ----------
 export default function App() {
-  // ---- YouTube search state ----
+  // YouTube search state
   const [ytKey, setYtKey] = useLocalSetting("pdj_yt_key", "");
   const [search, setSearch] = useState("");
   const [results, setResults] = useState([]);
@@ -101,38 +103,33 @@ export default function App() {
     } finally { setLoading(false); }
   }
 
-  // ---- Firebase + rooms/queue state ----
+  // Firebase config (accept snippet or JSON)
   const [fbConfig, setFbConfig] = useLocalSetting("pdj_fb_config", "");
-  // Do NOT load Firebase scripts until you’ve pasted the config JSON
-  const needsFirebase = !fbConfig;   
+  const fbCfg = useMemo(() => parseFirebaseJson(fbConfig), [fbConfig]);
+  const needsFirebase = !fbCfg; // only enable queue when JSON is valid
+
+  // Load Firebase scripts ONLY when config is valid
   const fbAppSrc = needsFirebase ? null : firebaseCdn.app;
   const fbDbSrc  = needsFirebase ? null : firebaseCdn.db;
   const firebaseReady = useScript(fbAppSrc) && useScript(fbDbSrc);
 
-
- 
   const [db, setDb] = useState(null);
-
   useEffect(() => {
     if (needsFirebase) return;
     if (!firebaseReady) return;
-
-    let cfg = null;
-    try { cfg = fbConfig ? JSON.parse(fbConfig) : null; } catch { return; }
-    if (!cfg || !window.firebase) return;
-
+    if (!fbCfg || !window.firebase) return;
     try {
       const hasApps = !!(window.firebase && window.firebase.apps && window.firebase.apps.length > 0);
-
       if (!hasApps && typeof window.firebase.initializeApp === "function") {
-        window.firebase.initializeApp(cfg);
+        window.firebase.initializeApp(fbCfg);
       }
       if (typeof window.firebase.database === "function") {
         setDb(window.firebase.database());
       }
     } catch (e) { console.warn("Firebase init failed", e); }
-  }, [firebaseReady, fbConfig, needsFirebase]);
+  }, [firebaseReady, fbCfg, needsFirebase]);
 
+  // Rooms / queue
   const [roomCode, setRoomCode] = useLocalSetting("pdj_room", "");
   const [displayName, setDisplayName] = useLocalSetting("pdj_name", "Guest"+randomId(3));
   const [isHost, setIsHost] = useState(localStorage.getItem("pdj_is_host")==="1");
@@ -201,18 +198,15 @@ export default function App() {
   };
   const togglePause = async () => {
     if (!isHost || !rCtl.current) return;
-    try {
-      await rCtl.current.transaction(ctl => { ctl=ctl||{}; ctl.paused=!ctl.paused; return ctl; });
-    } catch(e){}
+    try { await rCtl.current.transaction(ctl => { ctl=ctl||{}; ctl.paused=!ctl.paused; return ctl; }); } catch(e){}
   };
 
-  // --- Host playback using YouTube Iframe API (very guarded) ---
+  // Host playback (YouTube)
   const ytReady = useYouTubeApi();
   const ytRef = useRef(null);
   const ytPlayer = useRef(null);
 
   useEffect(() => {
-    if (needsFirebase) return;
     if (!ytReady || !isHost) return;
     if (ytPlayer.current) return;
     try {
@@ -226,7 +220,7 @@ export default function App() {
         },
       });
     } catch {}
-  }, [ytReady, isHost, needsFirebase]);
+  }, [ytReady, isHost]);
 
   useEffect(() => {
     if (!ytPlayer.current || !isHost) return;
@@ -243,21 +237,21 @@ export default function App() {
     try { paused ? ytPlayer.current.pauseVideo() : ytPlayer.current.playVideo(); } catch {}
   }, [paused, isHost]);
 
-  // Room link for sharing
+  // Shareable room link & auto-join
   const roomUrl = useMemo(() => {
     const u = new URL(window.location.href);
     u.searchParams.set("room", roomCode || "");
     return u.toString();
   }, [roomCode]);
 
-  // Auto-join if ?room=CODE (only when Firebase set)
   useEffect(() => {
     if (needsFirebase) return;
     const url = new URL(window.location.href);
     const r = url.searchParams.get("room");
     if (r && !connected) joinRoom(r);
-  }, [connected, needsFirebase]);  
+  }, [connected, needsFirebase]);
 
+  // ---------- UI ----------
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <header className="sticky top-0 z-40 backdrop-blur bg-slate-950/70 border-b border-slate-800">
@@ -272,10 +266,12 @@ export default function App() {
         <section className="lg:col-span-2 space-y-6">
           <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
             <div className="flex flex-wrap items-center gap-2">
-              <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700" placeholder="Your name"
-                     value={displayName} onChange={(e)=>setDisplayName(e.target.value)} />
-              <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 w-28" placeholder="ROOM"
-                     value={roomCode} onChange={(e)=>setRoomCode(e.target.value.toUpperCase())} />
+              <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700"
+                     placeholder="Your name" value={displayName}
+                     onChange={(e)=>setDisplayName(e.target.value)} />
+              <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 w-28"
+                     placeholder="ROOM" value={roomCode}
+                     onChange={(e)=>setRoomCode(e.target.value.toUpperCase())} />
               <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold" onClick={()=>joinRoom()}>
                 Join
               </button>
@@ -289,7 +285,7 @@ export default function App() {
               </label>
             </div>
             {connected && <div className="mt-3 text-sm opacity-80">Share this room: <a className="underline break-all" href={roomUrl}>{roomUrl}</a></div>}
-            {needsFirebase && <div className="mt-3 text-sm text-rose-300">Queue features disabled until you add Firebase config (see Settings → Firebase).</div>}
+            {needsFirebase && <div className="mt-3 text-sm text-rose-300">Queue features disabled until you paste valid Firebase config (Settings).</div>}
           </div>
 
           {/* Search + Results */}
@@ -384,12 +380,14 @@ export default function App() {
             <label className="text-sm opacity-80">YouTube Data API key</label>
             <input className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 outline-none"
                    placeholder="AIza…" value={ytKey} onChange={(e)=>setYtKey(e.target.value)} />
-            <label className="text-sm opacity-80 mt-4 block">Firebase config (JSON)</label>
+            <label className="text-sm opacity-80 mt-4 block">Firebase config (JSON or snippet)</label>
             <textarea className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 outline-none"
-                      rows={6} placeholder='{"apiKey":"...","authDomain":"...","databaseURL":"...","projectId":"...","storageBucket":"...","messagingSenderId":"...","appId":"..."}'
+                      rows={6}
+                      placeholder='Paste either { "apiKey":"...", ... } OR the full snippet that contains it'
                       value={fbConfig} onChange={(e)=>setFbConfig(e.target.value)} />
             <p className="mt-2 text-xs opacity-70">
-              Realtime Database must be enabled. Paste your web config JSON from Firebase project settings.
+              Realtime Database must be enabled. You can paste the raw JSON or the entire
+              <i> const firebaseConfig = {{'{'}}…{{'}'}}; </i> snippet — I’ll extract it safely.
             </p>
           </div>
 
