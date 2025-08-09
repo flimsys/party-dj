@@ -50,6 +50,20 @@ function useYouTubeApi() {
 }
 const randomId = (n=4)=>Math.random().toString(36).slice(2,2+n).toUpperCase();
 
+function parseFirebaseJson(str) {
+  if (!str) return null;
+  const t = String(str).trim();
+  // If user pasted the whole snippet, grab just the {...}
+  let jsonText = t;
+  if (!t.startsWith("{")) {
+    const a = t.indexOf("{");
+    const b = t.lastIndexOf("}");
+    if (a !== -1 && b !== -1) jsonText = t.slice(a, b + 1);
+  }
+  try { return JSON.parse(jsonText); } catch { return null; }
+}
+
+
 export default function App() {
   // ---- YouTube search state ----
   const [ytKey, setYtKey] = useLocalSetting("pdj_yt_key", "");
