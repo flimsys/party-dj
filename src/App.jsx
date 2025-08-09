@@ -18,7 +18,7 @@ const YT_IFRAME_API = "https://www.youtube.com/iframe_api";
 function useScript(src) {
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
-    if (!src) { setLoaded(false); return; } // do nothing if not provided
+    if (!src) { setLoaded(false); return; } // ignore empty src
     let el = document.querySelector(`script[src="${src}"]`);
     if (!el) {
       el = document.createElement("script");
@@ -49,10 +49,7 @@ function useYouTubeApi() {
 
 const randomId = (n=4)=>Math.random().toString(36).slice(2,2+n).toUpperCase();
 
-/** Accepts either the raw JSON {…} OR a full snippet like:
- * const firebaseConfig = { ... };
- * returns a parsed object or null
- */
+/** Accept raw JSON {…} OR a snippet like `const firebaseConfig = { … };` */
 function parseFirebaseJson(str) {
   if (!str) return null;
   const t = String(str).trim();
@@ -106,27 +103,34 @@ export default function App() {
   // Firebase config (accept snippet or JSON)
   const [fbConfig, setFbConfig] = useLocalSetting("pdj_fb_config", "");
   const fbCfg = useMemo(() => parseFirebaseJson(fbConfig), [fbConfig]);
-  const needsFirebase = !fbCfg; // only enable queue when JSON is valid
+  const needsFirebase = !fbCfg; // enable queue only when JSON parses
 
   // Load Firebase scripts ONLY when config is valid
   const fbAppSrc = needsFirebase ? null : firebaseCdn.app;
   const fbDbSrc  = needsFirebase ? null : firebaseCdn.db;
   const firebaseReady = useScript(fbAppSrc) && useScript(fbDbSrc);
 
+  // Single SAFE Firebase init
   const [db, setDb] = useState(null);
   useEffect(() => {
-    if (needsFirebase) return;
-    if (!firebaseReady) return;
+    if (needsFirebase) return;        // wait for valid JSON
+    if (!firebaseReady) return;       // wait for scripts
     if (!fbCfg || !window.firebase) return;
+
     try {
-      const hasApps = !!(window.firebase && window.firebase.apps && window.firebase.apps.length > 0);
-      if (!hasApps && typeof window.firebase.initializeApp === "function") {
-        window.firebase.initializeApp(fbCfg);
+      // firebase.app() throws if no app has been initialized
+      try { window.firebase.app(); }
+      catch {
+        if (typeof window.firebase.initializeApp === "function") {
+          window.firebase.initializeApp(fbCfg);
+        }
       }
       if (typeof window.firebase.database === "function") {
         setDb(window.firebase.database());
       }
-    } catch (e) { console.warn("Firebase init failed", e); }
+    } catch (e) {
+      console.warn("Firebase init failed", e);
+    }
   }, [firebaseReady, fbCfg, needsFirebase]);
 
   // Rooms / queue
@@ -157,7 +161,7 @@ export default function App() {
         const items = Array.isArray(v) ? v.filter(Boolean) : Object.values(v).filter(Boolean);
         items.sort((a,b)=>(b.votes||0)-(a.votes||0));
         setQueue(items || []);
-      } catch (e) { setQueue([]); }
+      } catch { setQueue([]); }
     });
     rNow.current.on("value", s => {
       try { setNowPlaying((typeof s?.val==="function" ? s.val() : null) || null); }
@@ -245,29 +249,11 @@ export default function App() {
   }, [roomCode]);
 
   useEffect(() => {
-  if (needsFirebase) return;
-  if (!firebaseReady) return;
-  if (!fbCfg || !window.firebase) return;
-
-  try {
-    // SUPER SAFE access to apps array
-    const apps = (() => {
-      try { return (window.firebase && window.firebase.apps) || []; }
-      catch { return []; }
-    })();
-    const hasApps = Array.isArray(apps) && apps.length > 0;
-
-    if (!hasApps && typeof window.firebase.initializeApp === "function") {
-      window.firebase.initializeApp(fbCfg);
-    }
-    if (typeof window.firebase.database === "function") {
-      setDb(window.firebase.database());
-    }
-  } catch (e) {
-    console.warn("Firebase init failed", e);
-  }
-}, [firebaseReady, fbCfg, needsFirebase]);
-
+    if (needsFirebase) return;
+    const url = new URL(window.location.href);
+    const r = url.searchParams.get("room");
+    if (r && !connected) joinRoom(r);
+  }, [connected, needsFirebase]);
 
   // ---------- UI ----------
   return (
@@ -404,7 +390,7 @@ export default function App() {
                       placeholder='Paste either { "apiKey":"...", ... } OR the full snippet that contains it'
                       value={fbConfig} onChange={(e)=>setFbConfig(e.target.value)} />
             <p className="mt-2 text-xs opacity-70">
-              Realtime Database must be enabled. You can paste the raw JSON or the entire
+              Realtime Database must be enabled. You can paste the raw JSON or the entire{" "}
               <i>const firebaseConfig = {"{"} ... {"}"};</i> snippet — I’ll extract it safely.
             </p>
           </div>
