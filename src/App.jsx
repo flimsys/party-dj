@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — YouTube Search + Firebase Queue (safe, snippet-friendly) **/
+/** Party DJ — YouTube Search + Firebase Queue (safe, with Reset button) **/
 
 // ---------- helpers ----------
 function useLocalSetting(key, initial = "") {
   const [v, setV] = useState(() => localStorage.getItem(key) ?? initial);
-  useEffect(() => { localStorage.setItem(key, v ?? ""); }, [key, v]);
+  useEffect(() => { try { localStorage.setItem(key, v ?? ""); } catch {} }, [key, v]);
   return [v, setV];
 }
 
@@ -18,7 +18,7 @@ const YT_IFRAME_API = "https://www.youtube.com/iframe_api";
 function useScript(src) {
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
-    if (!src) { setLoaded(false); return; } // ignore empty src
+    if (!src) { setLoaded(false); return; } // do nothing if not provided
     let el = document.querySelector(`script[src="${src}"]`);
     if (!el) {
       el = document.createElement("script");
@@ -49,7 +49,10 @@ function useYouTubeApi() {
 
 const randomId = (n=4)=>Math.random().toString(36).slice(2,2+n).toUpperCase();
 
-/** Accept raw JSON {…} OR a snippet like `const firebaseConfig = { … };` */
+/** Accepts either the raw JSON {…} OR a full snippet like:
+ * const firebaseConfig = { ... };
+ * returns a parsed object or null
+ */
 function parseFirebaseJson(str) {
   if (!str) return null;
   const t = String(str).trim();
@@ -71,16 +74,6 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [previewId, setPreviewId] = useState("");
-
-  function resetApp() {
-  if (!window.confirm('Clear saved keys (YouTube + Firebase) and reset the app?')) return;
-  const keys = ['pdj_fb_config', 'pdj_yt_key', 'pdj_is_host', 'pdj_room', 'pdj_name'];
-  try { keys.forEach(k => localStorage.removeItem(k)); } catch {}
-  // extra safety: clear all site storage
-  try { localStorage.clear(); } catch {}
-  location.reload();
-}
-
 
   async function runSearch() {
     setError("");
@@ -113,34 +106,33 @@ export default function App() {
   // Firebase config (accept snippet or JSON)
   const [fbConfig, setFbConfig] = useLocalSetting("pdj_fb_config", "");
   const fbCfg = useMemo(() => parseFirebaseJson(fbConfig), [fbConfig]);
-  const needsFirebase = !fbCfg; // enable queue only when JSON parses
+  const needsFirebase = !fbCfg; // only enable queue when JSON is valid
 
   // Load Firebase scripts ONLY when config is valid
   const fbAppSrc = needsFirebase ? null : firebaseCdn.app;
   const fbDbSrc  = needsFirebase ? null : firebaseCdn.db;
   const firebaseReady = useScript(fbAppSrc) && useScript(fbDbSrc);
 
-  // Single SAFE Firebase init
   const [db, setDb] = useState(null);
   useEffect(() => {
-    if (needsFirebase) return;        // wait for valid JSON
-    if (!firebaseReady) return;       // wait for scripts
+    if (needsFirebase) return;
+    if (!firebaseReady) return;
     if (!fbCfg || !window.firebase) return;
 
     try {
-      // firebase.app() throws if no app has been initialized
-      try { window.firebase.app(); }
-      catch {
+      // Avoid touching .length; try app() and init if needed
+      try {
+        window.firebase.app();
+      } catch {
         if (typeof window.firebase.initializeApp === "function") {
           window.firebase.initializeApp(fbCfg);
         }
       }
+
       if (typeof window.firebase.database === "function") {
         setDb(window.firebase.database());
       }
-    } catch (e) {
-      console.warn("Firebase init failed", e);
-    }
+    } catch (e) { console.warn("Firebase init failed", e); }
   }, [firebaseReady, fbCfg, needsFirebase]);
 
   // Rooms / queue
@@ -171,7 +163,7 @@ export default function App() {
         const items = Array.isArray(v) ? v.filter(Boolean) : Object.values(v).filter(Boolean);
         items.sort((a,b)=>(b.votes||0)-(a.votes||0));
         setQueue(items || []);
-      } catch { setQueue([]); }
+      } catch (e) { setQueue([]); }
     });
     rNow.current.on("value", s => {
       try { setNowPlaying((typeof s?.val==="function" ? s.val() : null) || null); }
@@ -264,6 +256,15 @@ export default function App() {
     const r = url.searchParams.get("room");
     if (r && !connected) joinRoom(r);
   }, [connected, needsFirebase]);
+
+  // Reset button handler
+  function resetApp() {
+    if (!window.confirm('Clear saved keys (YouTube + Firebase) and reset the app?')) return;
+    const keys = ['pdj_fb_config', 'pdj_yt_key', 'pdj_is_host', 'pdj_room', 'pdj_name'];
+    try { keys.forEach(k => localStorage.removeItem(k)); } catch {}
+    try { localStorage.clear(); } catch {}
+    location.reload();
+  }
 
   // ---------- UI ----------
   return (
@@ -400,9 +401,15 @@ export default function App() {
                       placeholder='Paste either { "apiKey":"...", ... } OR the full snippet that contains it'
                       value={fbConfig} onChange={(e)=>setFbConfig(e.target.value)} />
             <p className="mt-2 text-xs opacity-70">
-              Realtime Database must be enabled. You can paste the raw JSON or the entire{" "}
-              <i>const firebaseConfig = {"{"} ... {"}"};</i> snippet — I’ll extract it safely.
+              Realtime Database must be enabled. You can paste the raw JSON or the entire
+              <i> const firebaseConfig = {"{"} ... {"}"};</i> snippet — I’ll extract it safely.
             </p>
+            <button
+              className="mt-3 px-3 py-2 rounded-xl border border-slate-700 hover:bg-slate-800/50 text-sm"
+              onClick={resetApp}
+            >
+              Reset app (clear saved settings)
+            </button>
           </div>
 
           {isHost && (
