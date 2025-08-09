@@ -92,11 +92,18 @@ export default function App(){
     rNow.current   = base.child('now');
     rCtl.current   = base.child('control');
 
-    rQueue.current.on('value', s=>{
-      const v = s && s.val ? s.val() : {};
-      const items = Object.values(v || {}).filter(Boolean).sort((a,b)=> (b.votes||0)-(a.votes||0));
-      setQueue(items);
-    });
+    rQueue.current.on('value', s => {
+  try {
+    const v = (typeof s?.val === "function" ? s.val() : {}) || {};
+    const items = Array.isArray(v) 
+      ? v.filter(Boolean).sort((a,b)=>(b.votes||0)-(a.votes||0))
+      : Object.values(v).filter(Boolean).sort((a,b)=>(b.votes||0)-(a.votes||0));
+    setQueue(items || []);
+  } catch (err) {
+    console.warn("Queue read error", err);
+    setQueue([]);
+  }
+});
     rNow.current.on('value', s=> setNowPlaying((s && s.val && s.val()) || null));
     rCtl.current.on('value', s=> setPaused(!!(((s && s.val && s.val())||{}).paused)));
     setConnected(true);
