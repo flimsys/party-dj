@@ -70,8 +70,26 @@ export default function App(){
     try{
       const cfg = fbConfig? JSON.parse(fbConfig): null;
       if(!cfg) return;
-      const app = window.firebase.apps?.length? window.firebase.app(): window.firebase.initializeApp(cfg);
-      setDb(window.firebase.database());
+      try {
+  const cfg = fbConfig ? JSON.parse(fbConfig) : null;
+  if (!cfg) return;
+
+  // Wait until the firebase global exists
+  if (!window.firebase) return;
+
+  // Safely check for existing app and init if needed
+  const hasApps = !!(window.firebase?.apps && window.firebase.apps.length > 0);
+  if (!hasApps && window.firebase?.initializeApp) {
+    window.firebase.initializeApp(cfg);
+  }
+
+  // Only set DB if available
+  if (window.firebase?.database) {
+    setDb(window.firebase.database());
+  }
+} catch (e) {
+  console.warn("Firebase config invalid or init failed", e);
+}
     }catch(e){ console.warn("Firebase config invalid", e); }
   },[firebaseReady, fbConfig]);
 
