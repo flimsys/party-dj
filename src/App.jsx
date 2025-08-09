@@ -245,11 +245,29 @@ export default function App() {
   }, [roomCode]);
 
   useEffect(() => {
-    if (needsFirebase) return;
-    const url = new URL(window.location.href);
-    const r = url.searchParams.get("room");
-    if (r && !connected) joinRoom(r);
-  }, [connected, needsFirebase]);
+  if (needsFirebase) return;
+  if (!firebaseReady) return;
+  if (!fbCfg || !window.firebase) return;
+
+  try {
+    // SUPER SAFE access to apps array
+    const apps = (() => {
+      try { return (window.firebase && window.firebase.apps) || []; }
+      catch { return []; }
+    })();
+    const hasApps = Array.isArray(apps) && apps.length > 0;
+
+    if (!hasApps && typeof window.firebase.initializeApp === "function") {
+      window.firebase.initializeApp(fbCfg);
+    }
+    if (typeof window.firebase.database === "function") {
+      setDb(window.firebase.database());
+    }
+  } catch (e) {
+    console.warn("Firebase init failed", e);
+  }
+}, [firebaseReady, fbCfg, needsFirebase]);
+
 
   // ---------- UI ----------
   return (
