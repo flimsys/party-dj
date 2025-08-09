@@ -297,3 +297,4 @@ export default function App(){
 }
 
 function Card({children}){ return <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">{children}</div>; }
+ 
