@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — YouTube Search + Firebase Queue (safe, with Reset button) **/
+/** Party DJ — YouTube Search + Firebase Queue (robust parsing + Reset) **/
 
-// ---------- helpers ----------
+// ---------- small helpers ----------
 function useLocalSetting(key, initial = "") {
   const [v, setV] = useState(() => localStorage.getItem(key) ?? initial);
   useEffect(() => { try { localStorage.setItem(key, v ?? ""); } catch {} }, [key, v]);
@@ -18,7 +18,7 @@ const YT_IFRAME_API = "https://www.youtube.com/iframe_api";
 function useScript(src) {
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
-    if (!src) { setLoaded(false); return; } // do nothing if not provided
+    if (!src) { setLoaded(false); return; }
     let el = document.querySelector(`script[src="${src}"]`);
     if (!el) {
       el = document.createElement("script");
@@ -49,20 +49,34 @@ function useYouTubeApi() {
 
 const randomId = (n=4)=>Math.random().toString(36).slice(2,2+n).toUpperCase();
 
-/** Accepts either the raw JSON {…} OR a full snippet like:
- * const firebaseConfig = { ... };
- * returns a parsed object or null
+/** Parse Firebase config pasted as:
+ *  - pure JSON { ... }
+ *  - whole snippet (with const firebaseConfig = { ... };)
+ *  - JSON with curly quotes
+ *  Falls back to tolerating single-quoted JS objects.
  */
 function parseFirebaseJson(str) {
   if (!str) return null;
   const t = String(str).trim();
-  let jsonText = t;
-  if (!t.startsWith("{")) {
-    const a = t.indexOf("{");
-    const b = t.lastIndexOf("}");
-    if (a !== -1 && b !== -1) jsonText = t.slice(a, b + 1);
-  }
-  try { return JSON.parse(jsonText); } catch { return null; }
+
+  // Take only the { ... } part if extra text was pasted
+  const a = t.indexOf("{");
+  const b = t.lastIndexOf("}");
+  if (a === -1 || b === -1 || b <= a) return null;
+  let jsonText = t.slice(a, b + 1);
+
+  // Normalize curly quotes → straight quotes
+  jsonText = jsonText
+    .replace(/[\u201C-\u201F\u2033\u2036]/g, '"') // various double quotes
+    .replace(/[\u2018\u2019\u201B\u2032\u2035]/g, "'"); // various single quotes
+
+  // Try strict JSON first
+  try { return JSON.parse(jsonText); } catch {}
+
+  // Fallback: allow single quotes / trailing commas by evaluating safely
+  try { return (new Function("return (" + jsonText + ")"))(); } catch {}
+
+  return null;
 }
 
 // ---------- app ----------
@@ -106,7 +120,7 @@ export default function App() {
   // Firebase config (accept snippet or JSON)
   const [fbConfig, setFbConfig] = useLocalSetting("pdj_fb_config", "");
   const fbCfg = useMemo(() => parseFirebaseJson(fbConfig), [fbConfig]);
-  const needsFirebase = !fbCfg; // only enable queue when JSON is valid
+  const needsFirebase = !fbCfg;
 
   // Load Firebase scripts ONLY when config is valid
   const fbAppSrc = needsFirebase ? null : firebaseCdn.app;
@@ -120,10 +134,9 @@ export default function App() {
     if (!fbCfg || !window.firebase) return;
 
     try {
-      // Avoid touching .length; try app() and init if needed
-      try {
-        window.firebase.app();
-      } catch {
+      // Avoid touching .length; use app() to detect initialization
+      try { window.firebase.app(); }
+      catch {
         if (typeof window.firebase.initializeApp === "function") {
           window.firebase.initializeApp(fbCfg);
         }
@@ -132,7 +145,9 @@ export default function App() {
       if (typeof window.firebase.database === "function") {
         setDb(window.firebase.database());
       }
-    } catch (e) { console.warn("Firebase init failed", e); }
+    } catch (e) {
+      console.warn("Firebase init failed", e);
+    }
   }, [firebaseReady, fbCfg, needsFirebase]);
 
   // Rooms / queue
@@ -368,7 +383,7 @@ export default function App() {
             </ul>
           </div>
 
-          {/* Inline preview player (not the host player) */}
+          {/* Inline preview player */}
           {previewId && (
             <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
               <div className="flex items-center justify-between mb-2">
