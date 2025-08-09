@@ -387,8 +387,7 @@ export default function App() {
                       value={fbConfig} onChange={(e)=>setFbConfig(e.target.value)} />
             <p className="mt-2 text-xs opacity-70">
               Realtime Database must be enabled. You can paste the raw JSON or the entire
-              <i>const firebaseConfig = { ... };</i>
- snippet — I’ll extract it safely.
+              <i>const firebaseConfig = {"{"} ... {"}"};</i> snippet — I’ll extract it safely.
             </p>
           </div>
 
