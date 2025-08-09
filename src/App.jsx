@@ -108,7 +108,8 @@ export default function App() {
     if (!cfg || !window.firebase) return;
 
     try {
-      const hasApps = Array.isArray(window.firebase.apps) && window.firebase.apps.length > 0;
+      const hasApps = !!(window.firebase && window.firebase.apps && window.firebase.apps.length > 0);
+
       if (!hasApps && typeof window.firebase.initializeApp === "function") {
         window.firebase.initializeApp(cfg);
       }
