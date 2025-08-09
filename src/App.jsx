@@ -186,8 +186,12 @@ useEffect(() => {
 
   // Room URL helper
   const roomUrl = useMemo(()=>{ const u=new URL(window.location.href); u.searchParams.set("room", roomCode||""); return u.toString(); },[roomCode]);
-  useEffect(()=>{ const url=new URL(window.location.href); const r=url.searchParams.get('room'); if(r && !connected) joinRoom(r); },[connected]);
-
+  useEffect(() => {
+  if (needsSetup) return; // Don’t run until keys are set
+  const url = new URL(window.location.href);
+  const r = url.searchParams.get('room');
+  if (r && !connected) joinRoom(r);
+}, [connected, needsSetup]);
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <header className="sticky top-0 z-40 backdrop-blur bg-slate-950/70 border-b border-slate-800">
