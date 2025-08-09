@@ -61,6 +61,8 @@ export default function App(){
   const [isHost, setIsHost] = useState(isHostDefault());
   const [ytKey, setYtKey] = useLocalSetting("pdj_yt_key", "");
   const [fbConfig, setFbConfig] = useLocalSetting("pdj_fb_config", "");
+  // If keys are missing, show setup screen instead of running the app
+  const needsSetup = !ytKey || !fbConfig;
 
   // Load Firebase
 const firebaseReady = useScript(firebaseCdn.app) && useScript(firebaseCdn.db);
