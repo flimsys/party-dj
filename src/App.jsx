@@ -63,36 +63,34 @@ export default function App(){
   const [fbConfig, setFbConfig] = useLocalSetting("pdj_fb_config", "");
 
   // Load Firebase
-  const firebaseReady = useScript(firebaseCdn.app) && useScript(firebaseCdn.db);
-  const [db, setDb] = useState(null);
-  useEffect(()=>{
-    if(!firebaseReady) return;
-    try{
-      const cfg = fbConfig? JSON.parse(fbConfig): null;
-      if(!cfg) return;
-      try {
-  const cfg = fbConfig ? JSON.parse(fbConfig) : null;
+const firebaseReady = useScript(firebaseCdn.app) && useScript(firebaseCdn.db);
+const [db, setDb] = useState(null);
+
+useEffect(() => {
+  // Only run if scripts loaded AND user has provided config
+  if (!firebaseReady) return;
+  let cfg = null;
+  try {
+    cfg = fbConfig ? JSON.parse(fbConfig) : null;
+  } catch (e) {
+    console.warn("Invalid Firebase JSON", e);
+    return;
+  }
   if (!cfg) return;
+  if (!window.firebase) return; // script not ready yet
 
-  // Wait until the firebase global exists
-  if (!window.firebase) return;
-
-  // Safely check for existing app and init if needed
-  const hasApps = !!(window.firebase?.apps && window.firebase.apps.length > 0);
-  if (!hasApps && window.firebase?.initializeApp) {
-    window.firebase.initializeApp(cfg);
+  try {
+    const hasApps = Array.isArray(window.firebase.apps) && window.firebase.apps.length > 0;
+    if (!hasApps && typeof window.firebase.initializeApp === "function") {
+      window.firebase.initializeApp(cfg);
+    }
+    if (typeof window.firebase.database === "function") {
+      setDb(window.firebase.database());
+    }
+  } catch (e) {
+    console.warn("Firebase init failed", e);
   }
-
-  // Only set DB if available
-  if (window.firebase?.database) {
-    setDb(window.firebase.database());
-  }
-} catch (e) {
-  console.warn("Firebase config invalid or init failed", e);
-}
-    }catch(e){ console.warn("Firebase config invalid", e); }
-  },[firebaseReady, fbConfig]);
-
+}, [firebaseReady, fbConfig]);
   // Realtime state
   const [connected, setConnected] = useState(false);
   const [queue, setQueue] = useState([]);
