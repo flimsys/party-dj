@@ -104,7 +104,14 @@ export default function App(){
     setQueue([]);
   }
 });
-    rNow.current.on('value', s=> setNowPlaying((s && s.val && s.val()) || null));
+    rNow.current.on('value', s => {
+  try {
+    const val = typeof s?.val === "function" ? s.val() : null;
+    setNowPlaying(val || null);
+  } catch {
+    setNowPlaying(null);
+  }
+});
     rCtl.current.on('value', s=> setPaused(!!(((s && s.val && s.val())||{}).paused)));
     setConnected(true);
   };
