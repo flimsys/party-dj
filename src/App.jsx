@@ -69,8 +69,9 @@ const firebaseReady = useScript(firebaseCdn.app) && useScript(firebaseCdn.db);
 const [db, setDb] = useState(null);
 
 useEffect(() => {
-  // Only run if scripts loaded AND user has provided config
+  if (needsSetup) return; // Don’t run until keys are set
   if (!firebaseReady) return;
+
   let cfg = null;
   try {
     cfg = fbConfig ? JSON.parse(fbConfig) : null;
@@ -78,8 +79,7 @@ useEffect(() => {
     console.warn("Invalid Firebase JSON", e);
     return;
   }
-  if (!cfg) return;
-  if (!window.firebase) return; // script not ready yet
+  if (!cfg || !window.firebase) return;
 
   try {
     const hasApps = Array.isArray(window.firebase.apps) && window.firebase.apps.length > 0;
@@ -92,7 +92,7 @@ useEffect(() => {
   } catch (e) {
     console.warn("Firebase init failed", e);
   }
-}, [firebaseReady, fbConfig]);
+}, [firebaseReady, fbConfig, needsSetup]);
   // Realtime state
   const [connected, setConnected] = useState(false);
   const [queue, setQueue] = useState([]);
