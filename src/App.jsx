@@ -18,6 +18,9 @@ const YT_IFRAME_API = "https://www.youtube.com/iframe_api";
 function useScript(src) {
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
+    // If no src (null/empty), don't load anything
+    if (!src) { setLoaded(false); return; }
+
     let el = document.querySelector(`script[src="${src}"]`);
     if (!el) {
       el = document.createElement("script");
@@ -32,6 +35,7 @@ function useScript(src) {
   }, [src]);
   return loaded;
 }
+
 function useYouTubeApi() {
   const [ready, setReady] = useState(false);
   useEffect(() => {
