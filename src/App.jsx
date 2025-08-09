@@ -72,6 +72,16 @@ export default function App() {
   const [error, setError] = useState("");
   const [previewId, setPreviewId] = useState("");
 
+  function resetApp() {
+  if (!window.confirm('Clear saved keys (YouTube + Firebase) and reset the app?')) return;
+  const keys = ['pdj_fb_config', 'pdj_yt_key', 'pdj_is_host', 'pdj_room', 'pdj_name'];
+  try { keys.forEach(k => localStorage.removeItem(k)); } catch {}
+  // extra safety: clear all site storage
+  try { localStorage.clear(); } catch {}
+  location.reload();
+}
+
+
   async function runSearch() {
     setError("");
     setResults([]);
