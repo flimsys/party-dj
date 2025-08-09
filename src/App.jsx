@@ -89,9 +89,14 @@ export default function App() {
 
   // ---- Firebase + rooms/queue state ----
   const [fbConfig, setFbConfig] = useLocalSetting("pdj_fb_config", "");
-  const needsFirebase = true; // queue features disabled until set
+  // Do NOT load Firebase scripts until you’ve pasted the config JSON
+  const needsFirebase = !fbConfig;   
+  const fbAppSrc = needsFirebase ? null : firebaseCdn.app;
+  const fbDbSrc  = needsFirebase ? null : firebaseCdn.db;
+  const firebaseReady = useScript(fbAppSrc) && useScript(fbDbSrc);
 
-  const firebaseReady = useScript(firebaseCdn.app) && useScript(firebaseCdn.db);
+
+ 
   const [db, setDb] = useState(null);
 
   useEffect(() => {
