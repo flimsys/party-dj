@@ -1,8 +1,31 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — YouTube Search + Firebase Queue (robust parsing + Reset) **/
+/** Party DJ — YouTube Search + Firebase Queue (robust parsing + Reset button + Reset link) **/
 
-// ---------- small helpers ----------
+// ---- quick reset by URL: add ?reset=1 to your site ----
+(function hardResetViaUrl() {
+  try {
+    const qs = new URLSearchParams(window.location.search);
+    if (qs.get("reset") === "1") {
+      try { localStorage.clear(); } catch {}
+      try { sessionStorage.clear(); } catch {}
+      // best-effort wipe of IndexedDB (may not be supported everywhere)
+      if (window.indexedDB && indexedDB.databases) {
+        indexedDB.databases().then(dbs => {
+          try { dbs.forEach(d => d?.name && indexedDB.deleteDatabase(d.name)); } catch {}
+        }).finally(() => {
+          const clean = window.location.origin + window.location.pathname + "?v=" + Date.now();
+          window.location.replace(clean);
+        });
+      } else {
+        const clean = window.location.origin + window.location.pathname + "?v=" + Date.now();
+        window.location.replace(clean);
+      }
+    }
+  } catch {}
+})();
+
+// ---------- helpers ----------
 function useLocalSetting(key, initial = "") {
   const [v, setV] = useState(() => localStorage.getItem(key) ?? initial);
   useEffect(() => { try { localStorage.setItem(key, v ?? ""); } catch {} }, [key, v]);
@@ -51,7 +74,7 @@ const randomId = (n=4)=>Math.random().toString(36).slice(2,2+n).toUpperCase();
 
 /** Parse Firebase config pasted as:
  *  - pure JSON { ... }
- *  - whole snippet (with const firebaseConfig = { ... };)
+ *  - whole snippet (const firebaseConfig = { ... };)
  *  - JSON with curly quotes
  *  Falls back to tolerating single-quoted JS objects.
  */
@@ -67,13 +90,13 @@ function parseFirebaseJson(str) {
 
   // Normalize curly quotes → straight quotes
   jsonText = jsonText
-    .replace(/[\u201C-\u201F\u2033\u2036]/g, '"') // various double quotes
-    .replace(/[\u2018\u2019\u201B\u2032\u2035]/g, "'"); // various single quotes
+    .replace(/[\u201C-\u201F\u2033\u2036]/g, '"') // double
+    .replace(/[\u2018\u2019\u201B\u2032\u2035]/g, "'"); // single
 
   // Try strict JSON first
   try { return JSON.parse(jsonText); } catch {}
 
-  // Fallback: allow single quotes / trailing commas by evaluating safely
+  // Fallback: allow single quotes / trailing commas by evaluating
   try { return (new Function("return (" + jsonText + ")"))(); } catch {}
 
   return null;
@@ -141,7 +164,6 @@ export default function App() {
           window.firebase.initializeApp(fbCfg);
         }
       }
-
       if (typeof window.firebase.database === "function") {
         setDb(window.firebase.database());
       }
@@ -278,7 +300,7 @@ export default function App() {
     const keys = ['pdj_fb_config', 'pdj_yt_key', 'pdj_is_host', 'pdj_room', 'pdj_name'];
     try { keys.forEach(k => localStorage.removeItem(k)); } catch {}
     try { localStorage.clear(); } catch {}
-    location.reload();
+    window.location.reload();
   }
 
   // ---------- UI ----------
