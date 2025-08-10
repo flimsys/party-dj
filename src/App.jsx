@@ -214,7 +214,7 @@ export default function App() {
 
   // Host playback (YouTube)
   const ytReady = useYouTubeApi();
-  const ytRef = useRef(null);
+  const ytRef = useRef(null);           // <-- the ref we use below
   const ytPlayer = useRef(null);
   useEffect(() => {
     if (!ytReady || !isHost) return;
@@ -421,7 +421,8 @@ export default function App() {
             <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
               <h2 className="text-lg font-bold mb-2">Host Player</h2>
               <div className="text-xs opacity-70 mb-2">Keep this tab open. Audio routes to your paired Bluetooth speaker.</div>
-              <div ref={useRef(null)} />
+              {/* FIXED LINE: use the real ref */}
+              <div ref={ytRef} />
               <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold w-full mt-3" onClick={startNext}>
                 Play top voted
               </button>
