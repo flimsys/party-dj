@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client';
 import App from './App.jsx';
 import './index.css';
 
-// Simple error boundary to show runtime errors on the page if anything breaks later
+// Simple error boundary to show runtime errors
 class ErrorBoundary extends React.Component {
   constructor(p){ super(p); this.state = { error: null }; }
   static getDerivedStateFromError(error){ return { error }; }
@@ -29,11 +29,47 @@ ReactDOM.createRoot(document.getElementById('root')).render(
   </React.StrictMode>
 );
 
-// Register the PWA service worker (safe no-op if unsupported)
+// -------------------------------
+// Service worker: auto-update + banner
+// -------------------------------
 if ('serviceWorker' in navigator) {
+  let reloading = false;
+
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch((err) => {
-      console.debug('SW registration skipped/failed', err);
-    });
+    navigator.serviceWorker.register('/sw.js').then((reg) => {
+      // 1) Auto-check on launch
+      reg.update().catch(() => {});
+
+      // 2) If a new worker is already waiting at startup → apply immediately
+      if (reg.waiting) {
+        // Store reference for banner (in case you want to show it instead)
+        window.__pdjSWWaiting = reg.waiting;
+        // Auto-apply on launch
+        reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+      }
+
+      // 3) If a fresh update arrives while the app is running, show banner
+      reg.addEventListener('updatefound', () => {
+        const sw = reg.installing;
+        if (!sw) return;
+        sw.addEventListener('statechange', () => {
+          if (sw.state === 'installed' && navigator.serviceWorker.controller) {
+            // New version ready (but not active yet). Save & notify the app.
+            window.__pdjSWWaiting = reg.waiting || sw; // waiting usually
+            window.dispatchEvent(new Event('pdj-sw-update-ready'));
+          }
+        });
+      });
+
+      // 4) When the new SW takes control → reload once
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (reloading) return;
+        reloading = true;
+        window.location.reload();
+      });
+
+      // Optional: periodic background check (every 15 minutes)
+      setInterval(() => reg.update().catch(() => {}), 15 * 60 * 1000);
+    }).catch(() => {});
   });
 }
