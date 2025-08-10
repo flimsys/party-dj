@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — guest view cleanup + collapsible Search/Chat
- *  - Guests (?guest=1): no room code, join/create, DJ toggle, or share link; Settings hidden.
- *  - Add Minimize/Expand buttons for Search and Chat (both DJ + Guest).
+/** Party DJ — Favorites + guest name hint + (all previous features)
+ * - Adds Favorites tab in Search (localStorage per device).
+ * - Guests see a hint beside their name: “This is the name others will see.”
  */
 
 (function hardResetViaUrl() {
@@ -89,6 +89,18 @@ const DEFAULT_FB_CFG = {
   measurementId: "G-58NT1F2QZM"
 };
 
+// ---- Favorites (local) ----
+function useFavorites(){
+  const KEY = "pdj_favorites";
+  const [list, setList] = useState(()=>{ try{ return JSON.parse(localStorage.getItem(KEY)||"[]"); }catch{return [];}});
+  useEffect(()=>{ try{ localStorage.setItem(KEY, JSON.stringify(list)); }catch{} }, [list]);
+  const has = id => list.some(x=>x.id===id);
+  const add = v => setList(prev => prev.some(x=>x.id===v.id) ? prev : [...prev, { id:v.id, title:v.title, thumb:v.thumb }]);
+  const remove = id => setList(prev => prev.filter(x=>x.id!==id));
+  const toggle = v => has(v.id) ? remove(v.id) : add(v);
+  return { list, add, remove, toggle, has, setList };
+}
+
 export default function App(){
   const toast = useToast();
 
@@ -106,6 +118,10 @@ export default function App(){
   const [search, setSearch] = useState("");
   const [results, setResults] = useState([]); const [loading, setLoading] = useState(false);
   const [error, setError] = useState(""); const [previewId, setPreviewId] = useState("");
+
+  // Favorites state
+  const { list: favs, toggle: toggleFav, remove: removeFav, has: hasFav } = useFavorites();
+  const [searchTab, setSearchTab] = useState("search"); // 'search' | 'favorites'
 
   function canSearchNow(){
     const k="pdj_search_times"; const now=Date.now();
@@ -346,7 +362,7 @@ export default function App(){
 
   function resetApp(){
     if(!confirm("Clear saved data and reset the app?")) return;
-    ['pdj_fb_config','pdj_room','pdj_name','pdj_client','pdj_search_times'].forEach(k=>{ try{localStorage.removeItem(k);}catch{} });
+    ['pdj_fb_config','pdj_room','pdj_name','pdj_client','pdj_search_times','pdj_favorites'].forEach(k=>{ try{localStorage.removeItem(k);}catch{} });
     try{ sessionStorage.clear(); }catch{}
     try{ localStorage.clear(); }catch{}; location.reload();
   }
@@ -395,28 +411,40 @@ export default function App(){
           {/* Join */}
           <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
             <div className="flex flex-wrap items-center gap-2">
-              {/* Name is always visible */}
-              <input
-                className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700"
-                placeholder="Your name"
-                value={displayName}
-                onChange={(e)=>setDisplayName(e.target.value)}
-              />
+              {/* Name */}
+              <div className="flex items-center gap-2">
+                <input
+                  className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700"
+                  placeholder="Your name"
+                  value={displayName}
+                  onChange={(e)=>setDisplayName(e.target.value)}
+                />
+                {isGuestView && (
+                  <span className="text-xs opacity-70 hidden sm:inline">
+                    This is the name others will see.
+                  </span>
+                )}
+              </div>
 
-              {/* Guest view: only Show QR */}
+              {/* Guest view: only Show QR + tiny hint on small screens */}
               {isGuestView ? (
                 <>
                   <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={()=>setShowQr(true)}>
                     Show QR
                   </button>
                   {!connected && (
+                    <span className="text-xs opacity-70 sm:hidden w-full">
+                      This is the name others will see.
+                    </span>
+                  )}
+                  {!connected && (
                     <span className="text-xs opacity-70">
-                      Open this from the DJ’s QR/link to join a room.
+                      Open from the DJ’s QR/link to join the room.
                     </span>
                   )}
                 </>
               ) : (
-                /* DJ view: room/join/create/qr/dj toggle */
+                /* DJ view */
                 <>
                   <input
                     className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 w-28"
@@ -449,10 +477,22 @@ export default function App(){
             )}
           </div>
 
-          {/* Search (collapsible) */}
+          {/* Search (collapsible + tabs) */}
           <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold">Search</h2>
+              <div className="flex items-center gap-3">
+                <h2 className="text-lg font-bold">Search</h2>
+                <div className="text-sm rounded-lg border border-slate-700 overflow-hidden">
+                  <button
+                    className={`px-3 py-1 ${searchTab==='search'?'bg-slate-800/60':''}`}
+                    onClick={()=>setSearchTab('search')}
+                  >Search</button>
+                  <button
+                    className={`px-3 py-1 ${searchTab==='favorites'?'bg-slate-800/60':''}`}
+                    onClick={()=>setSearchTab('favorites')}
+                  >Favorites ({favs.length})</button>
+                </div>
+              </div>
               <button
                 className="text-sm underline"
                 aria-expanded={!collapsedSearch}
@@ -464,23 +504,53 @@ export default function App(){
 
             {!collapsedSearch && (
               <>
-                <div className="flex gap-2 flex-wrap items-center mt-3">
-                  <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 flex-1 min-w-[240px] outline-none" placeholder="Search YouTube songs…" value={search} onChange={(e)=>setSearch(e.target.value)} onKeyDown={(e)=>{ if(e.key==='Enter') runSearch(); }} />
-                  <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold" onClick={runSearch} disabled={loading}>{loading? "Searching…":"Search"}</button>
-                </div>
-                {error && <div className="mt-3 text-sm text-rose-300">{error}</div>}
-                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-4">
-                  {(results||[]).map(v=>(
-                    <div key={v.id} className="p-2 bg-slate-900/60 rounded-2xl border border-slate-800">
-                      <img src={v.thumb} alt="" className="w-full h-32 object-cover rounded" />
-                      <div className="mt-2 text-sm font-semibold line-clamp-2">{v.title}</div>
-                      <div className="mt-2 flex gap-2">
-                        <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>setPreviewId(v.id)}>Play</button>
-                        <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>addToQueue(v)} disabled={!connected}>Add to Queue</button>
-                      </div>
+                {searchTab === "search" && (
+                  <>
+                    <div className="flex gap-2 flex-wrap items-center mt-3">
+                      <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 flex-1 min-w-[240px] outline-none" placeholder="Search YouTube songs…" value={search} onChange={(e)=>setSearch(e.target.value)} onKeyDown={(e)=>{ if(e.key==='Enter') runSearch(); }} />
+                      <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold" onClick={runSearch} disabled={loading}>{loading? "Searching…":"Search"}</button>
                     </div>
-                  ))}
-                </div>
+                    {error && <div className="mt-3 text-sm text-rose-300">{error}</div>}
+                    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-4">
+                      {(results||[]).map(v=>(
+                        <div key={v.id} className="p-2 bg-slate-900/60 rounded-2xl border border-slate-800">
+                          <img src={v.thumb} alt="" className="w-full h-32 object-cover rounded" />
+                          <div className="mt-2 text-sm font-semibold line-clamp-2">{v.title}</div>
+                          <div className="mt-2 flex gap-2 flex-wrap">
+                            <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>setPreviewId(v.id)}>Play</button>
+                            <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>addToQueue(v)} disabled={!connected}>Add to Queue</button>
+                            <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>toggleFav(v)}>
+                              {hasFav(v.id) ? "★ Saved" : "☆ Save"}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                {searchTab === "favorites" && (
+                  <div className="mt-3">
+                    {favs.length === 0 && (
+                      <div className="text-sm opacity-70">
+                        You don’t have any favorites yet. Search a song and press <b>☆ Save</b>.
+                      </div>
+                    )}
+                    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {favs.map(v=>(
+                        <div key={v.id} className="p-2 bg-slate-900/60 rounded-2xl border border-slate-800">
+                          <img src={v.thumb} alt="" className="w-full h-32 object-cover rounded" />
+                          <div className="mt-2 text-sm font-semibold line-clamp-2">{v.title}</div>
+                          <div className="mt-2 flex gap-2 flex-wrap">
+                            <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>setPreviewId(v.id)}>Play</button>
+                            <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>addToQueue(v)} disabled={!connected}>Add to Queue</button>
+                            <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>removeFav(v.id)}>Remove</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </>
             )}
           </div>
