@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — adds in-app “Install app” button (PWA)
- * - Shows an Install button when `beforeinstallprompt` fires.
- * - Keeps all previous features (favorites per-session, chat, presence, skip votes, QR, show video, etc.)
+/** Party DJ — PWA update banner + all features
+ * - Auto-check for new versions on launch and auto-apply (via sw.js + main.jsx).
+ * - If an update arrives while running, shows an “Update available” button in the header.
+ * - Includes: Install app button, search via Netlify function, favorites (per session), chat,
+ *   presence + active listeners, dynamic skip votes (50%), QR join, guest/DJ layouts, local show video.
  */
 
 (function hardResetViaUrl() {
@@ -82,7 +84,7 @@ function fmtTime(ts){
   try{ const d=new Date(ts); const hh=String(d.getHours()).padStart(2,"0"); const mm=String(d.getMinutes()).padStart(2,"0"); return `${hh}:${mm}`; }catch{return"";}
 }
 
-/** ✅ Baked Firebase config */
+/** ✅ Baked Firebase config (guests don't need to paste anything) */
 const DEFAULT_FB_CFG = {
   apiKey: "AIzaSyBqKvl9Hh47gg-9vf82bh64Wh9PJm-PfRI",
   authDomain: "party-dj-6ccc4.firebaseapp.com",
@@ -114,7 +116,7 @@ function useFavorites(){
   return { list, add, remove, toggle, has, setList };
 }
 
-/** 🔘 Install prompt hook */
+/** 🔘 Install prompt hook (for the “Install app” button) */
 function useInstallPrompt(){
   const [deferred, setDeferred] = React.useState(null);
   const [canInstall, setCanInstall] = React.useState(false);
@@ -146,8 +148,26 @@ function useInstallPrompt(){
   return { canInstall, install };
 }
 
+/** 🟦 Update banner hook (shows when a new SW is waiting while app runs) */
+function useUpdateBanner(){
+  const [updateReady, setUpdateReady] = React.useState(false);
+  React.useEffect(() => {
+    const onReady = () => setUpdateReady(true);
+    window.addEventListener('pdj-sw-update-ready', onReady);
+    return () => window.removeEventListener('pdj-sw-update-ready', onReady);
+  }, []);
+  const applyUpdate = () => {
+    try {
+      const w = window.__pdjSWWaiting;
+      if (w) w.postMessage({ type: 'SKIP_WAITING' });
+    } catch {}
+  };
+  return { updateReady, applyUpdate };
+}
+
 export default function App(){
   const toast = useToast();
+  const { updateReady, applyUpdate } = useUpdateBanner();
 
   const isGuestView = useMemo(() => {
     try { return new URL(window.location.href).searchParams.get("guest") === "1"; }
@@ -434,12 +454,14 @@ export default function App(){
                 {namesPreview}{moreNames>0?` +${moreNames}`:""}
               </button>
             )}
-            {/* 🔘 Install button appears when PWA is installable */}
-            {canInstall && (
-              <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={install}>
-                Install app
+            {/* Show if a new version is ready while app runs */}
+            {updateReady && (
+              <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={applyUpdate}>
+                Update available
               </button>
             )}
+            {/* Show when PWA is installable (Android/Desktop) */}
+            <InstallButton />
           </span>
         </div>
       </header>
@@ -772,5 +794,16 @@ export default function App(){
 
       <footer className="max-w-6xl mx-auto px-4 pb-8 text-xs opacity-60">Built for quick parties. Respect copyright & venue licensing.</footer>
     </div>
+  );
+}
+
+/** Small component to render the Install button when available */
+function InstallButton(){
+  const { canInstall, install } = useInstallPrompt();
+  if(!canInstall) return null;
+  return (
+    <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={install}>
+      Install app
+    </button>
   );
 }
