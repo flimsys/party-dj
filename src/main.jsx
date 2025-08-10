@@ -1,7 +1,7 @@
-import React from 'react'
-import ReactDOM from 'react-dom/client'
-import App from './App.jsx'
-import './index.css'
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App.jsx';
+import './index.css';
 
 // Simple error boundary to show runtime errors on the page if anything breaks later
 class ErrorBoundary extends React.Component {
@@ -27,4 +27,13 @@ ReactDOM.createRoot(document.getElementById('root')).render(
       <App />
     </ErrorBoundary>
   </React.StrictMode>
-)
+);
+
+// Register the PWA service worker (safe no-op if unsupported)
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((err) => {
+      console.debug('SW registration skipped/failed', err);
+    });
+  });
+}
