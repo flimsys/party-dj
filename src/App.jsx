@@ -1,6 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — Firebase baked, QR, Serverless YouTube Search (no keys on client) **/
+/** Party DJ — baked Firebase, serverless YouTube search, QR, + DJ tools
+ *  Adds:
+ *   1) DJ-only Skip & Clear Queue
+ *   2) Duplicate prevention (adds vote instead)
+ *   3) Client-side search rate limit (cooldown + per-minute cap)
+ *   4) Max songs per user in queue
+ *   5) Big QR on the Now Playing card
+ *   6) (Rules go in Firebase console—see below)
+ **/
 
 // ---- quick reset by URL: add ?reset=1 ----
 (function hardResetViaUrl() {
@@ -22,11 +30,25 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
   } catch {}
 })();
 
+// ---------- limits / knobs ----------
+const MAX_SONGS_PER_USER = 3;           // (4) max items a single user can have in queue
+const SEARCH_COOLDOWN_MS = 800;         // (3) min time between searches per browser
+const SEARCH_WINDOW_MS = 60_000;        // (3) sliding window length
+const SEARCH_MAX_PER_WINDOW = 15;       // (3) max searches per browser per minute
+
 // ---------- helpers ----------
 function useLocalSetting(key, initial = "") {
   const [v, setV] = useState(() => localStorage.getItem(key) ?? initial);
   useEffect(() => { try { localStorage.setItem(key, v ?? ""); } catch {} }, [key, v]);
   return [v, setV];
+}
+
+// simple toast
+function useToast() {
+  const [msg, setMsg] = useState("");
+  const [type, setType] = useState("info");
+  function show(m, t="info", ms=1800){ setMsg(m); setType(t); window.clearTimeout((show)._t); (show)._t=setTimeout(()=>setMsg(""), ms); }
+  return { msg, type, show };
 }
 
 const YT_IFRAME_API = "https://www.youtube.com/iframe_api";
@@ -76,17 +98,41 @@ const DEFAULT_FB_CFG = {
 
 // ---------- app ----------
 export default function App() {
-  // YouTube search (via serverless function)
+  // toast
+  const toast = useToast();
+
+  // YouTube search (via serverless function) + client rate limit
   const [search, setSearch] = useState("");
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [previewId, setPreviewId] = useState("");
 
+  function canSearchNow() {
+    const k = "pdj_search_times";
+    const now = Date.now();
+    let list = [];
+    try { list = JSON.parse(localStorage.getItem(k) || "[]"); } catch {}
+    list = list.filter(t => now - t <= SEARCH_WINDOW_MS);
+    if (list.length && now - list[list.length-1] < SEARCH_COOLDOWN_MS) {
+      toast.show("Searching too fast—give it a sec.", "warn");
+      return false;
+    }
+    if (list.length >= SEARCH_MAX_PER_WINDOW) {
+      toast.show("You’ve hit the search limit. Try again in a minute.", "warn", 2200);
+      return false;
+    }
+    list.push(now);
+    try { localStorage.setItem(k, JSON.stringify(list)); } catch {}
+    return true;
+  }
+
   async function runSearch() {
+    if (!search.trim()) return;
+    if (!canSearchNow()) return;
+
     setError("");
     setResults([]);
-    if (!search.trim()) return;
     try {
       setLoading(true);
       const res = await fetch(
@@ -163,17 +209,19 @@ export default function App() {
     return u.toString();
   }, [roomCode]);
 
-  // QR state
+  // QR state (global)
   const [showQr, setShowQr] = useState(false);
   const qrSrc = useMemo(() => {
     const url = roomUrl || window.location.href;
-    return `https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(url)}`;
+    return `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(url)}`;
   }, [roomUrl]);
+
   const copyLink = async () => {
-    try { await navigator.clipboard.writeText(roomUrl); alert("Link copied!"); }
+    try { await navigator.clipboard.writeText(roomUrl); toast.show("Link copied!","info"); }
     catch { prompt("Copy this link", roomUrl); }
   };
 
+  // Join / listeners
   const joinRoom = async (code) => {
     if (!fdb?.db) { alert("Firebase not ready. Reload the page."); return; }
     const { db, ref, child, onValue } = fdb;
@@ -202,17 +250,39 @@ export default function App() {
   };
   const createRoom = () => joinRoom(randomId(4));
 
+  // Helpers
+  const sanitizeId = (id="") => id.replace(/[.#$\[\]]/g,'_');
+
+  // (2) Duplicate prevention + (4) max per user
   const addToQueue = async (video) => {
     if (!rQueue.current) { alert("Join a room first."); return; }
+    const id = `yt:${video.id}`;
+    // dup guard (also check Now Playing)
+    const dup = (queue || []).some(q => q.id === id) || (nowPlaying?.id === id);
+    if (dup) {
+      // Upvote instead of adding
+      await vote(id, +1);
+      toast.show("Already in queue — upvoted.", "info");
+      return;
+    }
+    // per-user cap
+    const mine = (queue || []).filter(q => (q.addedBy || "") === displayName).length;
+    if (mine >= MAX_SONGS_PER_USER) {
+      toast.show(`Limit reached: max ${MAX_SONGS_PER_USER} in queue.`, "warn");
+      return;
+    }
+
     const { set, child } = fdb;
-    const id = `yt:${video.id}`.replace(/[.#$\[\]]/g,'_');
+    const safeId = sanitizeId(id);
     const item = { id, provider:'youtube', title: video.title, thumb: video.thumb, addedBy: displayName, votes:1, ts: Date.now() };
-    try { await set(child(rQueue.current, id), item); } catch(e){ console.warn(e); }
+    try { await set(child(rQueue.current, safeId), item); }
+    catch(e){ console.warn(e); toast.show("Couldn’t add. Try again.", "warn"); }
   };
+
   const vote = async (id, delta=1) => {
     if (!rQueue.current) return;
     const { runTransaction, child } = fdb;
-    const safeId = (id||"").replace(/[.#$\[\]]/g,'_');
+    const safeId = sanitizeId(id);
     try {
       await runTransaction(child(rQueue.current, safeId), (it) => {
         if (!it) return it;
@@ -221,16 +291,31 @@ export default function App() {
       });
     } catch (e) { console.warn(e); }
   };
+
+  // (1) DJ: Skip & Clear
   const startNext = async () => {
     if (!isHost || !rQueue.current || !rNow.current) return;
     const { set, remove, child } = fdb;
     const next = [...(queue||[])].sort((a,b)=>(b.votes||0)-(a.votes||0))[0];
-    if (!next) return;
+    if (!next) { toast.show("Queue is empty.", "info"); return; }
     try {
       await set(rNow.current, { id: next.id, title: next.title, thumb: next.thumb, provider:'youtube', startedAt: Date.now() });
-      await remove(child(rQueue.current, next.id.replace(/[.#$\[\]]/g,'_')));
+      await remove(child(rQueue.current, sanitizeId(next.id)));
     } catch(e){ console.warn(e); }
   };
+
+  const clearQueue = async () => {
+    if (!isHost || !rQueue.current) return;
+    if (!window.confirm("Clear the entire queue?")) return;
+    const { remove, child } = fdb;
+    try {
+      for (const it of (queue||[])) {
+        await remove(child(rQueue.current, sanitizeId(it.id)));
+      }
+      toast.show("Queue cleared.", "info");
+    } catch (e) { console.warn(e); toast.show("Couldn’t clear queue.", "warn"); }
+  };
+
   const togglePause = async () => {
     if (!isHost || !rCtl.current) return;
     const { runTransaction } = fdb;
@@ -281,7 +366,7 @@ export default function App() {
   // Reset button
   function resetApp() {
     if (!window.confirm('Clear saved data and reset the app?')) return;
-    ['pdj_fb_config','pdj_is_host','pdj_room','pdj_name'].forEach(k=>{ try{localStorage.removeItem(k);}catch{} });
+    ['pdj_fb_config','pdj_is_host','pdj_room','pdj_name','pdj_search_times'].forEach(k=>{ try{localStorage.removeItem(k);}catch{} });
     try { localStorage.clear(); } catch {}
     location.reload();
   }
@@ -289,6 +374,13 @@ export default function App() {
   // ---------- UI ----------
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
+      {/* toast */}
+      {toast.msg && (
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 px-3 py-2 rounded-xl border border-slate-700 bg-slate-900/90 text-sm">
+          {toast.msg}
+        </div>
+      )}
+
       <header className="sticky top-0 z-40 backdrop-blur bg-slate-950/70 border-b border-slate-800">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
           <span className="text-xl font-bold">Party DJ</span>
@@ -313,12 +405,9 @@ export default function App() {
               <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={createRoom}>
                 Create
               </button>
-
-              {/* QR button */}
               <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={()=>setShowQr(true)}>
                 Show QR
               </button>
-
               <label className="ml-auto inline-flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={isHost}
                   onChange={(e)=>{ setIsHost(e.target.checked); localStorage.setItem("pdj_is_host", e.target.checked?"1":"0"); }} />
@@ -364,13 +453,20 @@ export default function App() {
               <h2 className="text-lg font-bold">Queue</h2>
               {isHost && <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={startNext}>Start next</button>}
               {isHost && <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={togglePause}>{paused?"Resume":"Pause"}</button>}
+              {isHost && <button className="px-2 py-1 rounded-lg border border-slate-700 ml-auto" onClick={clearQueue}>Clear queue</button>}
             </div>
             {nowPlaying && (
               <div className="mb-4 p-3 bg-slate-900/60 rounded-xl border border-slate-800">
-                <div className="text-sm opacity-70">Now playing</div>
-                <div className="flex items-center gap-3 mt-2">
-                  <img src={nowPlaying.thumb} className="w-24 h-14 rounded object-cover" />
-                  <div className="font-semibold line-clamp-2">{nowPlaying.title}</div>
+                <div className="flex items-center gap-3 justify-between">
+                  <div className="flex items-center gap-3">
+                    <img src={nowPlaying.thumb} className="w-24 h-14 rounded object-cover" />
+                    <div>
+                      <div className="text-sm opacity-70">Now playing</div>
+                      <div className="font-semibold line-clamp-2">{nowPlaying.title}</div>
+                    </div>
+                  </div>
+                  {/* (5) Big QR here too */}
+                  <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>setShowQr(true)}>QR</button>
                 </div>
               </div>
             )}
@@ -438,9 +534,14 @@ export default function App() {
               <h2 className="text-lg font-bold mb-2">Host Player</h2>
               <div className="text-xs opacity-70 mb-2">Keep this tab open. Audio routes to your paired Bluetooth speaker.</div>
               <div ref={ytRef} />
-              <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold w-full mt-3" onClick={startNext}>
-                Play top voted
-              </button>
+              <div className="grid grid-cols-2 gap-2 mt-3">
+                <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold" onClick={startNext}>
+                  Play top voted / Skip
+                </button>
+                <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={togglePause}>
+                  {paused ? "Resume" : "Pause"}
+                </button>
+              </div>
             </div>
           )}
         </section>
