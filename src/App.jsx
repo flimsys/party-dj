@@ -1,9 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — per-person “Show video” toggle
- * - Adds a checkbox in the Queue card to show/hide the Now Playing video locally.
- * - Uses sessionStorage so each person’s choice resets when they restart the app.
- * - Keeps existing features: chat, favorites (per session), presence, skip votes, QR, etc.
+/** Party DJ — adds in-app “Install app” button (PWA)
+ * - Shows an Install button when `beforeinstallprompt` fires.
+ * - Keeps all previous features (favorites per-session, chat, presence, skip votes, QR, show video, etc.)
  */
 
 (function hardResetViaUrl() {
@@ -115,6 +114,38 @@ function useFavorites(){
   return { list, add, remove, toggle, has, setList };
 }
 
+/** 🔘 Install prompt hook */
+function useInstallPrompt(){
+  const [deferred, setDeferred] = React.useState(null);
+  const [canInstall, setCanInstall] = React.useState(false);
+
+  React.useEffect(() => {
+    const onBIP = (e) => {
+      e.preventDefault();           // keep it for later
+      setDeferred(e);
+      setCanInstall(true);
+    };
+    const onInstalled = () => setCanInstall(false);
+
+    window.addEventListener('beforeinstallprompt', onBIP);
+    window.addEventListener('appinstalled', onInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBIP);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, []);
+
+  const install = async () => {
+    if (!deferred) return;
+    deferred.prompt();
+    try { await deferred.userChoice; } catch {}
+    setDeferred(null);
+    setCanInstall(false);
+  };
+
+  return { canInstall, install };
+}
+
 export default function App(){
   const toast = useToast();
 
@@ -214,9 +245,13 @@ export default function App(){
 
   const [showQr, setShowQr] = useState(false);
   const [showPeople, setShowPeople] = useState(false);
-  const qrSrc = useMemo(()=> `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(guestRoomUrl || window.location.href)}`, [guestRoomUrl]);
+  const [showVideo, setShowVideo] = useSessionBool("pdj_showVideo", false); // local show video toggle
 
+  const qrSrc = useMemo(()=> `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(guestRoomUrl || window.location.href)}`, [guestRoomUrl]);
   const copyLink = async ()=>{ const link = guestRoomUrl; try{ await navigator.clipboard.writeText(link); toast.show("Link copied!"); } catch{ prompt("Copy this link", link); } };
+
+  // 🔘 PWA install hook
+  const { canInstall, install } = useInstallPrompt();
 
   const joinRoom = async (code)=>{
     if(!fdb?.db){ alert("Firebase not ready. Reload the page."); return; }
@@ -385,9 +420,6 @@ export default function App(){
   const namesPreview = activeNames.slice(0,3).join(", ");
   const moreNames = Math.max(0, activeNames.length - 3);
 
-  // ✅ New: per-person “Show video” toggle stored in session
-  const [showVideo, setShowVideo] = useSessionBool("pdj_showVideo", false);
-
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       {toast.msg && <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 px-3 py-2 rounded-xl border border-slate-700 bg-slate-900/90 text-sm">{toast.msg}</div>}
@@ -400,6 +432,12 @@ export default function App(){
             {activeCount > 0 && (
               <button className="underline" onClick={()=>setShowPeople(true)}>
                 {namesPreview}{moreNames>0?` +${moreNames}`:""}
+              </button>
+            )}
+            {/* 🔘 Install button appears when PWA is installable */}
+            {canInstall && (
+              <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={install}>
+                Install app
               </button>
             )}
           </span>
@@ -579,7 +617,7 @@ export default function App(){
                     </div>
                   </div>
 
-                  {/* ✅ New: local show video switch */}
+                  {/* Local show video switch */}
                   <label className="ml-3 inline-flex items-center gap-2 text-sm">
                     <input type="checkbox" checked={showVideo} onChange={(e)=>setShowVideo(e.target.checked)} />
                     Show video (local)
@@ -706,12 +744,12 @@ export default function App(){
               <button className="text-sm underline" onClick={()=>setShowQr(false)}>Close</button>
             </div>
             <div className="w-full flex items-center justify-center">
-              <img src={`https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(guestRoomUrl || window.location.href)}`} alt="Room QR" className="rounded-xl border border-slate-800" />
+              <img src={qrSrc} alt="Room QR" className="rounded-xl border border-slate-800" />
             </div>
             <div className="mt-3 text-xs break-all opacity-80">{guestRoomUrl}</div>
             <div className="mt-3 flex gap-2">
               <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={copyLink}>Copy link</button>
-              <a className="px-3 py-2 rounded-xl border border-slate-700 text-center" href={`https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(guestRoomUrl || window.location.href)}`} download={`party-dj-${roomCode||"room"}.png`}>Download QR</a>
+              <a className="px-3 py-2 rounded-xl border border-slate-700 text-center" href={qrSrc} download={`party-dj-${roomCode||"room"}.png`}>Download QR</a>
             </div>
             {!roomCode && <div className="mt-3 text-xs text-rose-300">Tip: open from the DJ’s QR so the room is set.</div>}
           </div>
