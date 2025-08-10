@@ -1,11 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — presence (active listeners) + dynamic vote-to-skip (50%)
- *  Keeps all previous features:
- *   - DJ Skip / Clear, pause/resume
- *   - Duplicate prevention + per-user cap
+/** Party DJ — active listener NAMES + simple chat
+ *  Still includes:
+ *   - Presence count + dynamic 50% skip
  *   - Serverless YouTube search (guests can search)
- *   - QR share, preview player
+ *   - DJ controls, QR, preview, duplicate guard, per-user cap
  *   - Baked Firebase config (guests don’t paste)
  */
 
@@ -33,13 +32,11 @@ const MAX_SONGS_PER_USER = 3;
 const SEARCH_COOLDOWN_MS = 800;
 const SEARCH_WINDOW_MS = 60_000;
 const SEARCH_MAX_PER_WINDOW = 15;
-// Skip threshold = ceil(activeListeners * 0.5)
-const SKIP_THRESHOLD = (active) => Math.max(1, Math.ceil(active * 0.5));
-// Presence: consider clients active if their heartbeat < 60s old
 const PRESENCE_STALE_MS = 60_000;
 const HEARTBEAT_MS = 15_000;
+const SKIP_THRESHOLD = (active) => Math.max(1, Math.ceil(active * 0.5)); // 50%
 
-// ---- small helpers ----
+// ---- helpers ----
 function useLocalSetting(key, initial = "") {
   const [v, setV] = useState(() => localStorage.getItem(key) ?? initial);
   useEffect(() => { try { localStorage.setItem(key, v ?? ""); } catch {} }, [key, v]);
@@ -73,6 +70,9 @@ function parseFirebaseJson(str) {
   try { return JSON.parse(jsonText); } catch {}
   try { return (new Function("return ("+jsonText+")"))(); } catch {}
   return null;
+}
+function fmtTime(ts){
+  try{ const d=new Date(ts); const hh=String(d.getHours()).padStart(2,"0"); const mm=String(d.getMinutes()).padStart(2,"0"); return `${hh}:${mm}`; }catch{return"";}
 }
 
 /** ✅ Baked Firebase config */
@@ -126,7 +126,7 @@ export default function App(){
   const fbCfg = useMemo(()=> parseFirebaseJson(fbConfig) || DEFAULT_FB_CFG, [fbConfig]);
 
   // Firebase ESM imports
-  const [fdb, setFdb] = useState(null); // { db, ref, child, onValue, set, update, runTransaction, remove, onDisconnect }
+  const [fdb, setFdb] = useState(null); // { db, ref, child, onValue, set, update, runTransaction, remove, onDisconnect, push }
   useEffect(()=>{ let cancelled=false;
     async function init(){
       if(!fbCfg) return;
@@ -140,7 +140,7 @@ export default function App(){
             db,
             ref: dbMod.ref, child: dbMod.child, onValue: dbMod.onValue,
             set: dbMod.set, update: dbMod.update, runTransaction: dbMod.runTransaction, remove: dbMod.remove,
-            onDisconnect: dbMod.onDisconnect
+            onDisconnect: dbMod.onDisconnect, push: dbMod.push
           });
         }
       }catch(e){ console.warn("Firebase ESM init failed:", e); if(!cancelled) setFdb(null); }
@@ -156,20 +156,28 @@ export default function App(){
   const [connected, setConnected] = useState(false);
   const [queue, setQueue] = useState([]); const [nowPlaying, setNowPlaying] = useState(null);
   const [paused, setPaused] = useState(false);
-  const [activeCount, setActiveCount] = useState(0); // 👥 active listeners (presence)
-  const requiredSkip = Math.max(1, Math.ceil(activeCount * 0.5));
 
-  // skip vote map
+  const [activeCount, setActiveCount] = useState(0);
+  const [activeNames, setActiveNames] = useState([]); // 👥 names
+  const requiredSkip = SKIP_THRESHOLD(activeCount);
+
   const [skipMap, setSkipMap] = useState({}); const skipCount = Object.keys(skipMap||{}).length;
   const meVoted = !!skipMap[displayName];
 
+  // Chat
+  const [chat, setChat] = useState([]);
+  const [chatText, setChatText] = useState("");
+  const chatBoxRef = useRef(null);
+
   // refs to DB paths
-  const rQueue = useRef(null), rNow = useRef(null), rCtl = useRef(null), rSkip = useRef(null), rPresence = useRef(null), rPresenceEntry = useRef(null);
+  const rQueue = useRef(null), rNow = useRef(null), rCtl = useRef(null), rSkip = useRef(null);
+  const rPresence = useRef(null), rPresenceEntry = useRef(null), rChat = useRef(null);
   const hbTimer = useRef(null);
 
   const roomUrl = useMemo(()=>{ const u=new URL(window.location.href); if(roomCode) u.searchParams.set("room", roomCode); else u.searchParams.delete("room"); return u.toString(); },[roomCode]);
 
   const [showQr, setShowQr] = useState(false);
+  const [showPeople, setShowPeople] = useState(false);
   const qrSrc = useMemo(()=> `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(roomUrl || window.location.href)}`, [roomUrl]);
 
   const copyLink = async ()=>{ try{ await navigator.clipboard.writeText(roomUrl); toast.show("Link copied!"); } catch{ prompt("Copy this link", roomUrl); } };
@@ -187,35 +195,48 @@ export default function App(){
     const cRef = child(baseRef, "control");
     const sRef = child(baseRef, "skipVotes");
     const pRef = child(baseRef, "presence");
+    const chRef = child(baseRef, "chat");
 
-    rQueue.current=qRef; rNow.current=nRef; rCtl.current=cRef; rSkip.current=sRef; rPresence.current=pRef;
+    rQueue.current=qRef; rNow.current=nRef; rCtl.current=cRef; rSkip.current=sRef; rPresence.current=pRef; rChat.current=chRef;
 
-    // listeners
+    // queue / now / control / skipVotes
     onValue(qRef, (s)=>{ try{ const v=s?.val()||{}; const items = Array.isArray(v)? v.filter(Boolean): Object.values(v).filter(Boolean); items.sort((a,b)=>(b.votes||0)-(a.votes||0)); setQueue(items||[]);}catch{ setQueue([]);} });
     onValue(nRef, (s)=>{ try{ setNowPlaying(s?.val()||null);}catch{ setNowPlaying(null);} });
     onValue(cRef, (s)=>{ try{ setPaused(!!((s?.val()||{}).paused)); }catch{ setPaused(false);} });
     onValue(sRef, (s)=>{ try{ setSkipMap(s?.val()||{});}catch{ setSkipMap({}); } });
 
-    // presence: write my entry + heartbeat + count active
+    // presence: write my entry + heartbeat + active names/count
     try{
       const meRef = child(pRef, clientId);
       rPresenceEntry.current = meRef;
       await set(meRef, { name: displayName || "Guest", ts: Date.now() });
       try { onDisconnect(meRef).remove(); } catch {}
-      // heartbeat
       if(hbTimer.current) clearInterval(hbTimer.current);
       hbTimer.current = setInterval(()=> { update(meRef, { name: displayName || "Guest", ts: Date.now() }); }, HEARTBEAT_MS);
 
-      // count active
       onValue(pRef, (s)=>{
         try{
           const all = s?.val() || {};
           const now = Date.now();
           const active = Object.values(all).filter(p => (now - (p?.ts||0)) <= PRESENCE_STALE_MS);
           setActiveCount(active.length);
-        }catch{ setActiveCount(0); }
+          const names = [...new Set(active.map(p => String(p?.name || "Guest").trim()).filter(Boolean))];
+          setActiveNames(names);
+        }catch{
+          setActiveCount(0); setActiveNames([]);
+        }
       });
     }catch(e){ console.warn("presence error", e); }
+
+    // chat listener
+    onValue(chRef, (s)=>{
+      try{
+        const v = s?.val() || {};
+        const items = Object.entries(v).map(([id, m]) => ({ id, ...(m||{}) }));
+        items.sort((a,b)=>(a.ts||0)-(b.ts||0));
+        setChat(items.slice(-200)); // last 200 msgs
+      }catch{ setChat([]); }
+    });
 
     setConnected(true);
   };
@@ -282,8 +303,6 @@ export default function App(){
       else await fdb.set(fdb.child(rSkip.current, key), true);
     }catch(e){ console.warn(e); }
   };
-
-  // Auto-skip when votes >= 50% of active listeners (host)
   useEffect(()=>{ if(!isHost) return; if(!rSkip.current) return;
     if(skipCount >= requiredSkip && nowPlaying){ startNext(); }
   }, [skipCount, requiredSkip, isHost]); // eslint-disable-line
@@ -314,6 +333,25 @@ export default function App(){
     try{ localStorage.clear(); }catch{}; location.reload();
   }
 
+  // Chat send
+  const sendChat = async ()=>{
+    const text = chatText.trim().slice(0,500);
+    if(!text) return;
+    if(!rChat.current){ alert("Join a room first."); return; }
+    try{
+      const newRef = fdb.push(rChat.current);
+      await fdb.set(newRef, { id: newRef.key, name: displayName || "Guest", text, ts: Date.now() });
+      setChatText("");
+    }catch(e){ console.warn("chat send failed", e); toast.show("Couldn’t send"); }
+  };
+  useEffect(()=>{ // auto-scroll chat
+    if(chatBoxRef.current){ chatBoxRef.current.scrollTop = chatBoxRef.current.scrollHeight; }
+  },[chat]);
+
+  // --- UI ---
+  const namesPreview = activeNames.slice(0,3).join(", ");
+  const moreNames = Math.max(0, activeNames.length - 3);
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       {toast.msg && <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 px-3 py-2 rounded-xl border border-slate-700 bg-slate-900/90 text-sm">{toast.msg}</div>}
@@ -321,15 +359,21 @@ export default function App(){
       <header className="sticky top-0 z-40 backdrop-blur bg-slate-950/70 border-b border-slate-800">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
           <span className="text-xl font-bold">Party DJ</span>
-          <span className="text-xs ml-auto opacity-70">
-            Pair to your Bluetooth speaker first. <span className="ml-3">👥 {activeCount} listening</span>
+          <span className="text-xs ml-auto opacity-70 flex items-center gap-2">
+            <span>👥 {activeCount} listening</span>
+            {activeCount > 0 && (
+              <button className="underline" onClick={()=>setShowPeople(true)}>
+                {namesPreview}{moreNames>0?` +${moreNames}`:""}
+              </button>
+            )}
           </span>
         </div>
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-6 grid lg:grid-cols-3 gap-6">
-        {/* Join */}
+        {/* LEFT: Join, Search, Queue, Chat, Preview */}
         <section className="lg:col-span-2 space-y-6">
+          {/* Join */}
           <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
             <div className="flex flex-wrap items-center gap-2">
               <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700" placeholder="Your name" value={displayName} onChange={(e)=>setDisplayName(e.target.value)} />
@@ -415,6 +459,26 @@ export default function App(){
             </ul>
           </div>
 
+          {/* Chat for everyone */}
+          <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
+            <h2 className="text-lg font-bold mb-2">Chat</h2>
+            <div ref={chatBoxRef} className="h-64 overflow-y-auto space-y-2 p-2 bg-slate-900/60 rounded-xl border border-slate-800">
+              {(chat||[]).map(m=>(
+                <div key={m.id} className="text-sm">
+                  <span className="font-semibold">{m.name || "Guest"}:</span>{" "}
+                  <span className="opacity-90">{m.text}</span>
+                  <span className="text-[10px] opacity-50 ml-2">{fmtTime(m.ts)}</span>
+                </div>
+              ))}
+              {(!chat || chat.length===0) && <div className="text-sm opacity-60">No messages yet.</div>}
+            </div>
+            <div className="mt-2 flex gap-2">
+              <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 flex-1 outline-none" placeholder="Type a message…" value={chatText} onChange={(e)=>setChatText(e.target.value)} onKeyDown={(e)=>{ if(e.key==='Enter') sendChat(); }} />
+              <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold" onClick={sendChat}>Send</button>
+            </div>
+            <div className="text-xs opacity-60 mt-1">Be nice ✌️</div>
+          </div>
+
           {/* Inline preview */}
           {previewId && (
             <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
@@ -429,7 +493,7 @@ export default function App(){
           )}
         </section>
 
-        {/* Right column: Settings & Host Player */}
+        {/* RIGHT: Settings & Host Player */}
         <section className="space-y-6">
           <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
             <h2 className="text-lg font-bold mb-2">Settings</h2>
@@ -472,6 +536,21 @@ export default function App(){
               <a className="px-3 py-2 rounded-xl border border-slate-700 text-center" href={qrSrc} download={`party-dj-${roomCode||"room"}.png`}>Download QR</a>
             </div>
             {!roomCode && <div className="mt-3 text-xs text-rose-300">Tip: set a ROOM code or click Create first.</div>}
+          </div>
+        </div>
+      )}
+
+      {/* People modal */}
+      {showPeople && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-4 w-full max-w-sm">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-bold">Who's listening</h3>
+              <button className="text-sm underline" onClick={()=>setShowPeople(false)}>Close</button>
+            </div>
+            <ul className="max-h-80 overflow-y-auto space-y-1">
+              {(activeNames||[]).map((n,i)=> <li key={i} className="text-sm">{n}</li>)}
+            </ul>
           </div>
         </div>
       )}
