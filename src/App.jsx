@@ -1,9 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — guest view cleanup
- *  Guests (links with ?guest=1) now see:
- *   - Name field + Show QR button only
- *   - No ROOM input, Join/Create, DJ toggle, or Share link
+/** Party DJ — guest view cleanup + collapsible Search/Chat
+ *  - Guests (?guest=1): no room code, join/create, DJ toggle, or share link; Settings hidden.
+ *  - Add Minimize/Expand buttons for Search and Chat (both DJ + Guest).
  */
 
 (function hardResetViaUrl() {
@@ -98,6 +97,10 @@ export default function App(){
     try { return new URL(window.location.href).searchParams.get("guest") === "1"; }
     catch { return false; }
   }, []);
+
+  // Collapsible sections
+  const [collapsedSearch, setCollapsedSearch] = useState(false);
+  const [collapsedChat, setCollapsedChat] = useState(false);
 
   // Search (serverless) + client rate-limit
   const [search, setSearch] = useState("");
@@ -446,25 +449,40 @@ export default function App(){
             )}
           </div>
 
-          {/* Search */}
+          {/* Search (collapsible) */}
           <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
-            <div className="flex gap-2 flex-wrap items-center">
-              <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 flex-1 min-w-[240px] outline-none" placeholder="Search YouTube songs…" value={search} onChange={(e)=>setSearch(e.target.value)} onKeyDown={(e)=>{ if(e.key==='Enter') runSearch(); }} />
-              <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold" onClick={runSearch} disabled={loading}>{loading? "Searching…":"Search"}</button>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold">Search</h2>
+              <button
+                className="text-sm underline"
+                aria-expanded={!collapsedSearch}
+                onClick={()=>setCollapsedSearch(s=>!s)}
+              >
+                {collapsedSearch ? "Expand" : "Minimize"}
+              </button>
             </div>
-            {error && <div className="mt-3 text-sm text-rose-300">{error}</div>}
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-4">
-              {(results||[]).map(v=>(
-                <div key={v.id} className="p-2 bg-slate-900/60 rounded-2xl border border-slate-800">
-                  <img src={v.thumb} alt="" className="w-full h-32 object-cover rounded" />
-                  <div className="mt-2 text-sm font-semibold line-clamp-2">{v.title}</div>
-                  <div className="mt-2 flex gap-2">
-                    <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>setPreviewId(v.id)}>Play</button>
-                    <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>addToQueue(v)} disabled={!connected}>Add to Queue</button>
-                  </div>
+
+            {!collapsedSearch && (
+              <>
+                <div className="flex gap-2 flex-wrap items-center mt-3">
+                  <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 flex-1 min-w-[240px] outline-none" placeholder="Search YouTube songs…" value={search} onChange={(e)=>setSearch(e.target.value)} onKeyDown={(e)=>{ if(e.key==='Enter') runSearch(); }} />
+                  <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold" onClick={runSearch} disabled={loading}>{loading? "Searching…":"Search"}</button>
                 </div>
-              ))}
-            </div>
+                {error && <div className="mt-3 text-sm text-rose-300">{error}</div>}
+                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-4">
+                  {(results||[]).map(v=>(
+                    <div key={v.id} className="p-2 bg-slate-900/60 rounded-2xl border border-slate-800">
+                      <img src={v.thumb} alt="" className="w-full h-32 object-cover rounded" />
+                      <div className="mt-2 text-sm font-semibold line-clamp-2">{v.title}</div>
+                      <div className="mt-2 flex gap-2">
+                        <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>setPreviewId(v.id)}>Play</button>
+                        <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>addToQueue(v)} disabled={!connected}>Add to Queue</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
 
           {/* Queue */}
@@ -516,24 +534,38 @@ export default function App(){
             </ul>
           </div>
 
-          {/* Chat */}
+          {/* Chat (collapsible) */}
           <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
-            <h2 className="text-lg font-bold mb-2">Chat</h2>
-            <div ref={chatBoxRef} className="h-64 overflow-y-auto space-y-2 p-2 bg-slate-900/60 rounded-xl border border-slate-800">
-              {(chat||[]).map(m=>(
-                <div key={m.id} className="text-sm">
-                  <span className="font-semibold">{m.name || "Guest"}:</span>{" "}
-                  <span className="opacity-90">{m.text}</span>
-                  <span className="text-[10px] opacity-50 ml-2">{fmtTime(m.ts)}</span>
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-lg font-bold">Chat</h2>
+              <button
+                className="text-sm underline"
+                aria-expanded={!collapsedChat}
+                onClick={()=>setCollapsedChat(s=>!s)}
+              >
+                {collapsedChat ? "Expand" : "Minimize"}
+              </button>
+            </div>
+
+            {!collapsedChat && (
+              <>
+                <div ref={chatBoxRef} className="h-64 overflow-y-auto space-y-2 p-2 bg-slate-900/60 rounded-xl border border-slate-800">
+                  {(chat||[]).map(m=>(
+                    <div key={m.id} className="text-sm">
+                      <span className="font-semibold">{m.name || "Guest"}:</span>{" "}
+                      <span className="opacity-90">{m.text}</span>
+                      <span className="text-[10px] opacity-50 ml-2">{fmtTime(m.ts)}</span>
+                    </div>
+                  ))}
+                  {(!chat || chat.length===0) && <div className="text-sm opacity-60">No messages yet.</div>}
                 </div>
-              ))}
-              {(!chat || chat.length===0) && <div className="text-sm opacity-60">No messages yet.</div>}
-            </div>
-            <div className="mt-2 flex gap-2">
-              <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 flex-1 outline-none" placeholder="Type a message…" value={chatText} onChange={(e)=>setChatText(e.target.value)} onKeyDown={(e)=>{ if(e.key==='Enter') sendChat(); }} />
-              <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold" onClick={sendChat} disabled={chatSendBusy}>Send</button>
-            </div>
-            <div className="text-xs opacity-60 mt-1">Be nice ✌️</div>
+                <div className="mt-2 flex gap-2">
+                  <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 flex-1 outline-none" placeholder="Type a message…" value={chatText} onChange={(e)=>setChatText(e.target.value)} onKeyDown={(e)=>{ if(e.key==='Enter') sendChat(); }} />
+                  <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold" onClick={sendChat} disabled={chatSendBusy}>Send</button>
+                </div>
+                <div className="text-xs opacity-60 mt-1">Be nice ✌️</div>
+              </>
+            )}
           </div>
 
           {/* Inline preview */}
@@ -550,17 +582,20 @@ export default function App(){
           )}
         </section>
 
-        {/* RIGHT: Settings & Host Player */}
+        {/* RIGHT: Settings (DJ only) & Host Player */}
         <section className="space-y-6">
-          <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
-            <h2 className="text-lg font-bold mb-2">Settings</h2>
-            <details className="mt-1">
-              <summary className="cursor-pointer text-sm opacity-80">Firebase config (advanced)</summary>
-              <textarea className="mt-2 w-full px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 outline-none" rows={6} placeholder="(Optional) Paste JSON to override the baked config" value={fbConfig} onChange={(e)=>setFbConfig(e.target.value)} />
-              <p className="mt-2 text-xs opacity-70">Guests don’t need to paste anything.</p>
-            </details>
-            <button className="mt-3 px-3 py-2 rounded-xl border border-slate-700 hover:bg-slate-800/50 text-sm" onClick={resetApp}>Reset app (clear saved settings)</button>
-          </div>
+          {/* Hide Settings for guests */}
+          {!isGuestView && (
+            <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
+              <h2 className="text-lg font-bold mb-2">Settings</h2>
+              <details className="mt-1">
+                <summary className="cursor-pointer text-sm opacity-80">Firebase config (advanced)</summary>
+                <textarea className="mt-2 w-full px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 outline-none" rows={6} placeholder="(Optional) Paste JSON to override the baked config" value={fbConfig} onChange={(e)=>setFbConfig(e.target.value)} />
+                <p className="mt-2 text-xs opacity-70">Guests don’t need to paste anything.</p>
+              </details>
+              <button className="mt-3 px-3 py-2 rounded-xl border border-slate-700 hover:bg-slate-800/50 text-sm" onClick={resetApp}>Reset app (clear saved settings)</button>
+            </div>
+          )}
 
           {isHost && (
             <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
