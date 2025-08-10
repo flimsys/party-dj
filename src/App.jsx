@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — YouTube + Firebase Queue (ESM CDN version + Reset) **/
+/** Party DJ — YouTube + Firebase Queue (ESM CDN + baked Firebase config + Reset) **/
 
 // ---- quick reset by URL: add ?reset=1 ----
 (function hardResetViaUrl() {
@@ -62,6 +62,18 @@ function parseFirebaseJson(str) {
   return null;
 }
 
+/** ✅ Bake your Firebase config here so guests don't paste it */
+const DEFAULT_FB_CFG = {
+  "apiKey": "AIzaSyBqKvl9Hh47gg-9vf82bh64Wh9PJm-PfRI",
+  "authDomain": "party-dj-6ccc4.firebaseapp.com",
+  "databaseURL": "https://party-dj-6ccc4-default-rtdb.firebaseio.com",
+  "projectId": "party-dj-6ccc4",
+  "storageBucket": "party-dj-6ccc4.firebasestorage.app",
+  "messagingSenderId": "265535993182",
+  "appId": "1:265535993182:web:bec84b53875055ca8dcbcf",
+  "measurementId": "G-58NT1F2QZM"
+};
+
 // ---------- app ----------
 export default function App() {
   // YouTube
@@ -75,7 +87,7 @@ export default function App() {
   async function runSearch() {
     setError("");
     setResults([]);
-    if (!ytKey) { setError("Add your YouTube Data API key in Settings."); return; }
+    if (!ytKey) { setError("Only the DJ needs a YouTube key to search. Guests can still vote."); return; }
     if (!search.trim()) return;
     try {
       setLoading(true);
@@ -100,17 +112,17 @@ export default function App() {
     } finally { setLoading(false); }
   }
 
-  // Firebase config (accept snippet or JSON)
+  // Firebase config
   const [fbConfig, setFbConfig] = useLocalSetting("pdj_fb_config", "");
-  const fbCfg = useMemo(() => parseFirebaseJson(fbConfig), [fbConfig]);
-  const needsFirebase = !fbCfg;
+  const fbCfg = useMemo(() => parseFirebaseJson(fbConfig) || DEFAULT_FB_CFG, [fbConfig]);
+  const needsFirebase = !fbCfg; // will be false because DEFAULT_FB_CFG exists
 
-  // Firebase (ESM CDN modules) — loaded only when config is valid
+  // Firebase (ESM CDN modules) — loaded only when config is present (it is)
   const [fdb, setFdb] = useState(null); // { db, ref, child, onValue, set, update, runTransaction, remove }
   useEffect(() => {
     let cancelled = false;
     async function init() {
-      if (needsFirebase) return;
+      if (!fbCfg) return;
       try {
         const appMod = await import("https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js");
         const dbMod  = await import("https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js");
@@ -136,7 +148,7 @@ export default function App() {
     }
     init();
     return () => { cancelled = true; };
-  }, [fbCfg, needsFirebase]);
+  }, [fbCfg]);
 
   // Rooms / queue
   const [roomCode, setRoomCode] = useLocalSetting("pdj_room", "");
@@ -150,7 +162,7 @@ export default function App() {
   const rQueue = useRef(null), rNow = useRef(null), rCtl = useRef(null);
 
   const joinRoom = async (code) => {
-    if (!fdb?.db) { alert("Add Firebase config in Settings first."); return; }
+    if (!fdb?.db) { alert("Firebase not ready. Reload the page."); return; }
     const { db, ref, child, onValue } = fdb;
     const safe = (code || roomCode || "").trim().toUpperCase();
     if (!safe) { alert("Enter room code"); return; }
@@ -178,14 +190,14 @@ export default function App() {
   const createRoom = () => joinRoom(randomId(4));
 
   const addToQueue = async (video) => {
-    if (!fdb || !rQueue.current) { alert("Join a room first."); return; }
+    if (!rQueue.current) { alert("Join a room first."); return; }
     const { set, child } = fdb;
     const id = `yt:${video.id}`.replace(/[.#$\[\]]/g,'_');
     const item = { id, provider:'youtube', title: video.title, thumb: video.thumb, addedBy: displayName, votes:1, ts: Date.now() };
     try { await set(child(rQueue.current, id), item); } catch(e){ console.warn(e); }
   };
   const vote = async (id, delta=1) => {
-    if (!fdb || !rQueue.current) return;
+    if (!rQueue.current) return;
     const { runTransaction, child } = fdb;
     const safeId = (id||"").replace(/[.#$\[\]]/g,'_');
     try {
@@ -197,7 +209,7 @@ export default function App() {
     } catch (e) { console.warn(e); }
   };
   const startNext = async () => {
-    if (!isHost || !fdb || !rQueue.current || !rNow.current) return;
+    if (!isHost || !rQueue.current || !rNow.current) return;
     const { set, remove, child } = fdb;
     const next = [...(queue||[])].sort((a,b)=>(b.votes||0)-(a.votes||0))[0];
     if (!next) return;
@@ -207,14 +219,14 @@ export default function App() {
     } catch(e){ console.warn(e); }
   };
   const togglePause = async () => {
-    if (!isHost || !fdb || !rCtl.current) return;
+    if (!isHost || !rCtl.current) return;
     const { runTransaction } = fdb;
     try { await runTransaction(rCtl.current, (ctl)=>{ ctl=ctl||{}; ctl.paused=!ctl.paused; return ctl; }); } catch(e){}
   };
 
   // Host playback (YouTube)
   const ytReady = useYouTubeApi();
-  const ytRef = useRef(null);           // <-- the ref we use below
+  const ytRef = useRef(null);
   const ytPlayer = useRef(null);
   useEffect(() => {
     if (!ytReady || !isHost) return;
@@ -252,11 +264,11 @@ export default function App() {
     return u.toString();
   }, [roomCode]);
   useEffect(() => {
-    if (needsFirebase || !fdb) return;
+    if (!fdb) return;
     const url = new URL(window.location.href);
     const r = url.searchParams.get("room");
     if (r && !connected) joinRoom(r);
-  }, [connected, needsFirebase, fdb]);
+  }, [connected, fdb]);
 
   // Reset button
   function resetApp() {
@@ -300,7 +312,6 @@ export default function App() {
               </label>
             </div>
             {connected && <div className="mt-3 text-sm opacity-80">Share this room: <a className="underline break-all" href={roomUrl}>{roomUrl}</a></div>}
-            {needsFirebase && <div className="mt-3 text-sm text-rose-300">Queue features disabled until you paste valid Firebase config (Settings).</div>}
           </div>
 
           {/* Search + Results */}
@@ -324,7 +335,7 @@ export default function App() {
                   <div className="mt-2 flex gap-2">
                     <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>setPreviewId(v.id)}>Play</button>
                     <button className="px-2 py-1 rounded-lg border border-slate-700"
-                            onClick={()=>addToQueue(v)} disabled={!connected || needsFirebase}>
+                            onClick={()=>addToQueue(v)} disabled={!connected}>
                       Add to Queue
                     </button>
                   </div>
@@ -392,26 +403,20 @@ export default function App() {
         <section className="space-y-6">
           <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
             <h2 className="text-lg font-bold mb-2">Settings</h2>
-            <label className="text-sm opacity-80">YouTube Data API key</label>
+            <label className="text-sm opacity-80">YouTube Data API key (DJ only)</label>
             <input className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 outline-none"
-                   placeholder="AIza…" value={ytKey} onChange={(e)=>setYtKey(e.target.value)} />
-            <label className="text-sm opacity-80 mt-4 block">Firebase config (JSON or snippet)</label>
-            <textarea className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 outline-none"
-                      rows={6}
-                      placeholder='Paste either { "apiKey":"...", ... } OR the full snippet that contains it'
-                      value={fbConfig} onChange={(e)=>setFbConfig(e.target.value)} />
-            <p className="mt-2 text-xs opacity-70">
-              Realtime Database must be enabled. You can paste the raw JSON or the entire
-              <i> const firebaseConfig = {"{"} ... {"}"};</i> snippet — I’ll extract it safely.
-            </p>
+                   placeholder="Only DJ needs this — AIza…" value={ytKey} onChange={(e)=>setYtKey(e.target.value)} />
+            <details className="mt-3">
+              <summary className="cursor-pointer text-sm opacity-80">Firebase config (advanced)</summary>
+              <textarea className="mt-2 w-full px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 outline-none"
+                        rows={6}
+                        placeholder="(Optional) Paste JSON to override the baked config"
+                        value={fbConfig} onChange={(e)=>setFbConfig(e.target.value)} />
+              <p className="mt-2 text-xs opacity-70">Guests don’t need to paste anything.</p>
+            </details>
             <button
               className="mt-3 px-3 py-2 rounded-xl border border-slate-700 hover:bg-slate-800/50 text-sm"
-              onClick={() => {
-                if (!window.confirm('Clear saved keys (YouTube + Firebase) and reset the app?')) return;
-                ['pdj_fb_config','pdj_yt_key','pdj_is_host','pdj_room','pdj_name'].forEach(k=>{ try{localStorage.removeItem(k);}catch{} });
-                try { localStorage.clear(); } catch {}
-                location.reload();
-              }}
+              onClick={resetApp}
             >
               Reset app (clear saved settings)
             </button>
@@ -421,7 +426,6 @@ export default function App() {
             <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
               <h2 className="text-lg font-bold mb-2">Host Player</h2>
               <div className="text-xs opacity-70 mb-2">Keep this tab open. Audio routes to your paired Bluetooth speaker.</div>
-              {/* FIXED LINE: use the real ref */}
               <div ref={ytRef} />
               <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold w-full mt-3" onClick={startNext}>
                 Play top voted
