@@ -1,26 +1,23 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — YouTube Search + Firebase Queue (robust parsing + Reset button + Reset link) **/
+/** Party DJ — YouTube + Firebase Queue (ESM CDN version + Reset) **/
 
-// ---- quick reset by URL: add ?reset=1 to your site ----
+// ---- quick reset by URL: add ?reset=1 ----
 (function hardResetViaUrl() {
   try {
     const qs = new URLSearchParams(window.location.search);
     if (qs.get("reset") === "1") {
       try { localStorage.clear(); } catch {}
       try { sessionStorage.clear(); } catch {}
-      // best-effort wipe of IndexedDB (may not be supported everywhere)
-      if (window.indexedDB && indexedDB.databases) {
-        indexedDB.databases().then(dbs => {
-          try { dbs.forEach(d => d?.name && indexedDB.deleteDatabase(d.name)); } catch {}
-        }).finally(() => {
-          const clean = window.location.origin + window.location.pathname + "?v=" + Date.now();
-          window.location.replace(clean);
-        });
-      } else {
+      const finish = () => {
         const clean = window.location.origin + window.location.pathname + "?v=" + Date.now();
         window.location.replace(clean);
-      }
+      };
+      if (window.indexedDB?.databases) {
+        indexedDB.databases()
+          .then(dbs => Promise.all(dbs.map(d => d?.name && indexedDB.deleteDatabase(d.name))))
+          .finally(finish);
+      } else finish();
     }
   } catch {}
 })();
@@ -32,30 +29,7 @@ function useLocalSetting(key, initial = "") {
   return [v, setV];
 }
 
-const firebaseCdn = {
-  app: "https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js",
-  db:  "https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js",
-};
 const YT_IFRAME_API = "https://www.youtube.com/iframe_api";
-
-function useScript(src) {
-  const [loaded, setLoaded] = useState(false);
-  useEffect(() => {
-    if (!src) { setLoaded(false); return; }
-    let el = document.querySelector(`script[src="${src}"]`);
-    if (!el) {
-      el = document.createElement("script");
-      el.src = src;
-      el.async = true;
-      el.onload = () => setLoaded(true);
-      el.onerror = () => setLoaded(false);
-      document.head.appendChild(el);
-    } else {
-      setLoaded(true);
-    }
-  }, [src]);
-  return loaded;
-}
 
 function useYouTubeApi() {
   const [ready, setReady] = useState(false);
@@ -72,39 +46,25 @@ function useYouTubeApi() {
 
 const randomId = (n=4)=>Math.random().toString(36).slice(2,2+n).toUpperCase();
 
-/** Parse Firebase config pasted as:
- *  - pure JSON { ... }
- *  - whole snippet (const firebaseConfig = { ... };)
- *  - JSON with curly quotes
- *  Falls back to tolerating single-quoted JS objects.
- */
+/** Accepts raw JSON or a snippet containing it, tolerates curly quotes */
 function parseFirebaseJson(str) {
   if (!str) return null;
   const t = String(str).trim();
-
-  // Take only the { ... } part if extra text was pasted
   const a = t.indexOf("{");
   const b = t.lastIndexOf("}");
   if (a === -1 || b === -1 || b <= a) return null;
   let jsonText = t.slice(a, b + 1);
-
-  // Normalize curly quotes → straight quotes
   jsonText = jsonText
-    .replace(/[\u201C-\u201F\u2033\u2036]/g, '"') // double
-    .replace(/[\u2018\u2019\u201B\u2032\u2035]/g, "'"); // single
-
-  // Try strict JSON first
+    .replace(/[\u201C-\u201F\u2033\u2036]/g, '"')
+    .replace(/[\u2018\u2019\u201B\u2032\u2035]/g, "'");
   try { return JSON.parse(jsonText); } catch {}
-
-  // Fallback: allow single quotes / trailing commas by evaluating
   try { return (new Function("return (" + jsonText + ")"))(); } catch {}
-
   return null;
 }
 
 // ---------- app ----------
 export default function App() {
-  // YouTube search state
+  // YouTube
   const [ytKey, setYtKey] = useLocalSetting("pdj_yt_key", "");
   const [search, setSearch] = useState("");
   const [results, setResults] = useState([]);
@@ -145,32 +105,38 @@ export default function App() {
   const fbCfg = useMemo(() => parseFirebaseJson(fbConfig), [fbConfig]);
   const needsFirebase = !fbCfg;
 
-  // Load Firebase scripts ONLY when config is valid
-  const fbAppSrc = needsFirebase ? null : firebaseCdn.app;
-  const fbDbSrc  = needsFirebase ? null : firebaseCdn.db;
-  const firebaseReady = useScript(fbAppSrc) && useScript(fbDbSrc);
-
-  const [db, setDb] = useState(null);
+  // Firebase (ESM CDN modules) — loaded only when config is valid
+  const [fdb, setFdb] = useState(null); // { db, ref, child, onValue, set, update, runTransaction, remove }
   useEffect(() => {
-    if (needsFirebase) return;
-    if (!firebaseReady) return;
-    if (!fbCfg || !window.firebase) return;
-
-    try {
-      // Avoid touching .length; use app() to detect initialization
-      try { window.firebase.app(); }
-      catch {
-        if (typeof window.firebase.initializeApp === "function") {
-          window.firebase.initializeApp(fbCfg);
+    let cancelled = false;
+    async function init() {
+      if (needsFirebase) return;
+      try {
+        const appMod = await import("https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js");
+        const dbMod  = await import("https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js");
+        const apps = appMod.getApps();
+        const app = apps.length ? apps[0] : appMod.initializeApp(fbCfg);
+        const db = dbMod.getDatabase(app);
+        if (!cancelled) {
+          setFdb({
+            db,
+            ref: dbMod.ref,
+            child: dbMod.child,
+            onValue: dbMod.onValue,
+            set: dbMod.set,
+            update: dbMod.update,
+            runTransaction: dbMod.runTransaction,
+            remove: dbMod.remove,
+          });
         }
+      } catch (e) {
+        console.warn("Firebase ESM init failed:", e);
+        if (!cancelled) setFdb(null);
       }
-      if (typeof window.firebase.database === "function") {
-        setDb(window.firebase.database());
-      }
-    } catch (e) {
-      console.warn("Firebase init failed", e);
     }
-  }, [firebaseReady, fbCfg, needsFirebase]);
+    init();
+    return () => { cancelled = true; };
+  }, [fbCfg, needsFirebase]);
 
   // Rooms / queue
   const [roomCode, setRoomCode] = useLocalSetting("pdj_room", "");
@@ -184,45 +150,46 @@ export default function App() {
   const rQueue = useRef(null), rNow = useRef(null), rCtl = useRef(null);
 
   const joinRoom = async (code) => {
-    if (!db) { alert("Add Firebase config in Settings first."); return; }
+    if (!fdb?.db) { alert("Add Firebase config in Settings first."); return; }
+    const { db, ref, child, onValue } = fdb;
     const safe = (code || roomCode || "").trim().toUpperCase();
     if (!safe) { alert("Enter room code"); return; }
     setRoomCode(safe);
 
-    const base = db.ref(`rooms/${safe}`);
-    rQueue.current = base.child("queue");
-    rNow.current   = base.child("now");
-    rCtl.current   = base.child("control");
+    const baseRef = ref(db, `rooms/${safe}`);
+    const qRef = child(baseRef, "queue");
+    const nRef = child(baseRef, "now");
+    const cRef = child(baseRef, "control");
+    rQueue.current = qRef; rNow.current = nRef; rCtl.current = cRef;
 
-    rQueue.current.on("value", s => {
+    onValue(qRef, (s) => {
       try {
-        const v = (typeof s?.val === "function" ? s.val() : {}) || {};
+        const v = s?.val() || {};
         const items = Array.isArray(v) ? v.filter(Boolean) : Object.values(v).filter(Boolean);
         items.sort((a,b)=>(b.votes||0)-(a.votes||0));
         setQueue(items || []);
-      } catch (e) { setQueue([]); }
+      } catch { setQueue([]); }
     });
-    rNow.current.on("value", s => {
-      try { setNowPlaying((typeof s?.val==="function" ? s.val() : null) || null); }
-      catch { setNowPlaying(null); }
-    });
-    rCtl.current.on("value", s => setPaused(!!(((s && s.val && s.val())||{}).paused)));
+    onValue(nRef, (s) => { try { setNowPlaying(s?.val() || null); } catch { setNowPlaying(null); } });
+    onValue(cRef, (s) => { try { setPaused(!!((s?.val()||{}).paused)); } catch { setPaused(false); } });
 
     setConnected(true);
   };
   const createRoom = () => joinRoom(randomId(4));
 
   const addToQueue = async (video) => {
-    if (!rQueue.current) { alert("Join a room first."); return; }
+    if (!fdb || !rQueue.current) { alert("Join a room first."); return; }
+    const { set, child } = fdb;
     const id = `yt:${video.id}`.replace(/[.#$\[\]]/g,'_');
     const item = { id, provider:'youtube', title: video.title, thumb: video.thumb, addedBy: displayName, votes:1, ts: Date.now() };
-    try { await rQueue.current.child(id).set(item); } catch(e){ console.warn(e); }
+    try { await set(child(rQueue.current, id), item); } catch(e){ console.warn(e); }
   };
   const vote = async (id, delta=1) => {
-    if (!rQueue.current) return;
+    if (!fdb || !rQueue.current) return;
+    const { runTransaction, child } = fdb;
     const safeId = (id||"").replace(/[.#$\[\]]/g,'_');
     try {
-      await rQueue.current.child(safeId).transaction(it => {
+      await runTransaction(child(rQueue.current, safeId), (it) => {
         if (!it) return it;
         it.votes = (it.votes||0) + delta;
         return it;
@@ -230,25 +197,25 @@ export default function App() {
     } catch (e) { console.warn(e); }
   };
   const startNext = async () => {
-    if (!isHost || !rQueue.current || !rNow.current) return;
+    if (!isHost || !fdb || !rQueue.current || !rNow.current) return;
+    const { set, remove, child } = fdb;
     const next = [...(queue||[])].sort((a,b)=>(b.votes||0)-(a.votes||0))[0];
     if (!next) return;
     try {
-      await rNow.current.set({ id: next.id, title: next.title, thumb: next.thumb, provider:'youtube', startedAt: Date.now() });
-      await rQueue.current.child(next.id.replace(/[.#$\[\]]/g,'_')).remove();
-      await rCtl.current.update({ paused:false });
+      await set(rNow.current, { id: next.id, title: next.title, thumb: next.thumb, provider:'youtube', startedAt: Date.now() });
+      await remove(child(rQueue.current, next.id.replace(/[.#$\[\]]/g,'_')));
     } catch(e){ console.warn(e); }
   };
   const togglePause = async () => {
-    if (!isHost || !rCtl.current) return;
-    try { await rCtl.current.transaction(ctl => { ctl=ctl||{}; ctl.paused=!ctl.paused; return ctl; }); } catch(e){}
+    if (!isHost || !fdb || !rCtl.current) return;
+    const { runTransaction } = fdb;
+    try { await runTransaction(rCtl.current, (ctl)=>{ ctl=ctl||{}; ctl.paused=!ctl.paused; return ctl; }); } catch(e){}
   };
 
   // Host playback (YouTube)
   const ytReady = useYouTubeApi();
   const ytRef = useRef(null);
   const ytPlayer = useRef(null);
-
   useEffect(() => {
     if (!ytReady || !isHost) return;
     if (ytPlayer.current) return;
@@ -264,7 +231,6 @@ export default function App() {
       });
     } catch {}
   }, [ytReady, isHost]);
-
   useEffect(() => {
     if (!ytPlayer.current || !isHost) return;
     if (!nowPlaying?.id) return;
@@ -274,7 +240,6 @@ export default function App() {
       paused ? ytPlayer.current.pauseVideo() : ytPlayer.current.playVideo();
     } catch {}
   }, [nowPlaying, paused, isHost]);
-
   useEffect(() => {
     if (!ytPlayer.current || !isHost) return;
     try { paused ? ytPlayer.current.pauseVideo() : ytPlayer.current.playVideo(); } catch {}
@@ -286,21 +251,19 @@ export default function App() {
     u.searchParams.set("room", roomCode || "");
     return u.toString();
   }, [roomCode]);
-
   useEffect(() => {
-    if (needsFirebase) return;
+    if (needsFirebase || !fdb) return;
     const url = new URL(window.location.href);
     const r = url.searchParams.get("room");
     if (r && !connected) joinRoom(r);
-  }, [connected, needsFirebase]);
+  }, [connected, needsFirebase, fdb]);
 
-  // Reset button handler
+  // Reset button
   function resetApp() {
     if (!window.confirm('Clear saved keys (YouTube + Firebase) and reset the app?')) return;
-    const keys = ['pdj_fb_config', 'pdj_yt_key', 'pdj_is_host', 'pdj_room', 'pdj_name'];
-    try { keys.forEach(k => localStorage.removeItem(k)); } catch {}
+    ['pdj_fb_config','pdj_yt_key','pdj_is_host','pdj_room','pdj_name'].forEach(k=>{ try{localStorage.removeItem(k);}catch{} });
     try { localStorage.clear(); } catch {}
-    window.location.reload();
+    location.reload();
   }
 
   // ---------- UI ----------
@@ -443,7 +406,12 @@ export default function App() {
             </p>
             <button
               className="mt-3 px-3 py-2 rounded-xl border border-slate-700 hover:bg-slate-800/50 text-sm"
-              onClick={resetApp}
+              onClick={() => {
+                if (!window.confirm('Clear saved keys (YouTube + Firebase) and reset the app?')) return;
+                ['pdj_fb_config','pdj_yt_key','pdj_is_host','pdj_room','pdj_name'].forEach(k=>{ try{localStorage.removeItem(k);}catch{} });
+                try { localStorage.clear(); } catch {}
+                location.reload();
+              }}
             >
               Reset app (clear saved settings)
             </button>
@@ -453,7 +421,7 @@ export default function App() {
             <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
               <h2 className="text-lg font-bold mb-2">Host Player</h2>
               <div className="text-xs opacity-70 mb-2">Keep this tab open. Audio routes to your paired Bluetooth speaker.</div>
-              <div ref={ytRef} />
+              <div ref={useRef(null)} />
               <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold w-full mt-3" onClick={startNext}>
                 Play top voted
               </button>
