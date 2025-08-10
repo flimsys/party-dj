@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — PWA update banner + all features
+/** Party DJ — PWA update banner + Invite from contacts
  * - Auto-check for new versions on launch and auto-apply (via sw.js + main.jsx).
- * - If an update arrives while running, shows an “Update available” button in the header.
- * - Includes: Install app button, search via Netlify function, favorites (per session), chat,
- *   presence + active listeners, dynamic skip votes (50%), QR join, guest/DJ layouts, local show video.
+ * - “Update available” banner while running.
+ * - Invite via contacts (Contact Picker API) → fallback to native share → fallback to copy.
+ * - Everything else you already had (install button, search via function, favorites, chat,
+ *   presence + active listeners, dynamic skip votes (50%), QR join, guest/DJ layouts, local show video).
  */
 
 (function hardResetViaUrl() {
@@ -165,6 +166,12 @@ function useUpdateBanner(){
   return { updateReady, applyUpdate };
 }
 
+/** 📇 Invite helpers (contacts/share/copy) */
+function normalizeTel(v=""){
+  return String(v).replace(/[^\d+]/g,""); // keep digits and +
+}
+function firstOf(x){ return Array.isArray(x)&&x.length? x[0]: x||""; }
+
 export default function App(){
   const toast = useToast();
   const { updateReady, applyUpdate } = useUpdateBanner();
@@ -267,11 +274,48 @@ export default function App(){
   const [showPeople, setShowPeople] = useState(false);
   const [showVideo, setShowVideo] = useSessionBool("pdj_showVideo", false); // local show video toggle
 
+  // Invite modal state (when selecting specific contacts)
+  const [showInvite, setShowInvite] = useState(false);
+  const [pickedContacts, setPickedContacts] = useState([]);
+
   const qrSrc = useMemo(()=> `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(guestRoomUrl || window.location.href)}`, [guestRoomUrl]);
   const copyLink = async ()=>{ const link = guestRoomUrl; try{ await navigator.clipboard.writeText(link); toast.show("Link copied!"); } catch{ prompt("Copy this link", link); } };
 
   // 🔘 PWA install hook
   const { canInstall, install } = useInstallPrompt();
+
+  // ── INVITE: contacts → share → copy
+  const canPickContacts = !!(navigator?.contacts && navigator.contacts.select);
+  const canShare = !!navigator?.share;
+  const inviteText = useMemo(() =>
+    `Join my Party DJ room ${roomCode || ""}\n\n${guestRoomUrl}`, [guestRoomUrl, roomCode]);
+
+  async function inviteViaShare(){
+    if (!canShare) { await copyLink(); return; }
+    try{
+      await navigator.share({ title: "Party DJ", text: inviteText, url: guestRoomUrl });
+    }catch(e){ /* user cancelled */ }
+  }
+
+  async function inviteFromContacts(){
+    if (!canPickContacts) { return inviteViaShare(); }
+    try{
+      const propsAvail = (await navigator.contacts.getProperties?.()) || ["name","email","tel"];
+      const props = ["name","email","tel"].filter(p => propsAvail.includes(p));
+      const selected = await navigator.contacts.select(props, { multiple: true });
+      const clean = (selected||[]).map(c => ({
+        name: firstOf(c.name) || "Friend",
+        email: firstOf(c.email),
+        tel: normalizeTel(firstOf(c.tel))
+      }));
+      setPickedContacts(clean);
+      setShowInvite(true);
+    }catch(e){
+      // If user cancels, silently ignore; otherwise fallback to share.
+      if (String(e?.name||e).toLowerCase().includes("abort")) return;
+      inviteViaShare();
+    }
+  }
 
   const joinRoom = async (code)=>{
     if(!fdb?.db){ alert("Firebase not ready. Reload the page."); return; }
@@ -498,6 +542,9 @@ export default function App(){
                   <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={()=>setShowQr(true)}>
                     Show QR
                   </button>
+                  <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={inviteFromContacts}>
+                    Invite friends
+                  </button>
                   {!connected && (
                     <span className="text-xs opacity-70 sm:hidden w-full">
                       This is the name others will see.
@@ -525,6 +572,9 @@ export default function App(){
                   </button>
                   <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={()=>setShowQr(true)}>
                     Show QR
+                  </button>
+                  <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={inviteFromContacts}>
+                    Invite friends
                   </button>
                   <label className="ml-auto inline-flex items-center gap-2 text-sm">
                     <input type="checkbox" checked={isHost} onChange={(e)=> setIsHost(e.target.checked)} />
@@ -774,6 +824,57 @@ export default function App(){
               <a className="px-3 py-2 rounded-xl border border-slate-700 text-center" href={qrSrc} download={`party-dj-${roomCode||"room"}.png`}>Download QR</a>
             </div>
             {!roomCode && <div className="mt-3 text-xs text-rose-300">Tip: open from the DJ’s QR so the room is set.</div>}
+          </div>
+        </div>
+      )}
+
+      {/* Invite modal (selected contacts → SMS / email / copy) */}
+      {showInvite && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-4 w-full max-w-md">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-bold">Invite friends</h3>
+              <button className="text-sm underline" onClick={()=>setShowInvite(false)}>Close</button>
+            </div>
+
+            {(!pickedContacts || pickedContacts.length===0) && (
+              <div className="text-sm opacity-80">
+                No contacts selected. You can still share the link:
+                <div className="mt-2 flex gap-2">
+                  <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={inviteViaShare}>Share</button>
+                  <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={copyLink}>Copy link</button>
+                </div>
+              </div>
+            )}
+
+            {pickedContacts && pickedContacts.length>0 && (
+              <ul className="max-h-80 overflow-y-auto space-y-2">
+                {pickedContacts.map((c, i) => {
+                  const smsHref = c.tel ? `sms:${encodeURIComponent(c.tel)}?&body=${encodeURIComponent(inviteText)}` : null;
+                  const mailHref = c.email ? `mailto:${encodeURIComponent(c.email)}?subject=${encodeURIComponent("Join my Party DJ room")}&body=${encodeURIComponent(inviteText)}` : null;
+                  return (
+                    <li key={i} className="p-2 bg-slate-900/60 rounded-xl border border-slate-800">
+                      <div className="font-medium">{c.name}</div>
+                      <div className="text-xs opacity-70">
+                        {c.tel ? `📞 ${c.tel}` : ""} {c.email ? `  ✉️ ${c.email}` : ""}
+                      </div>
+                      <div className="mt-2 flex gap-2">
+                        {smsHref && <a className="px-2 py-1 rounded-lg border border-slate-700" href={smsHref}>SMS invite</a>}
+                        {mailHref && <a className="px-2 py-1 rounded-lg border border-slate-700" href={mailHref}>Email invite</a>}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            <div className="mt-3 flex gap-2">
+              <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={inviteViaShare}>Share sheet</button>
+              <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={copyLink}>Copy link</button>
+            </div>
+            <div className="text-[11px] opacity-60 mt-2">
+              Tip: On iPhone, the Contact Picker may need enabling in Settings → Safari → Advanced → Feature Flags.
+            </div>
           </div>
         </div>
       )}
