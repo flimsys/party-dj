@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — Favorites + guest name hint + (all previous features)
- * - Adds Favorites tab in Search (localStorage per device).
- * - Guests see a hint beside their name: “This is the name others will see.”
+/** Party DJ — Favorites + guest name hint + (share/QR removed per DJ request)
+ * - Favorites tab in Search (localStorage per device).
+ * - Guests see a hint beside their name.
+ * - DJ: removed “Share this room” link at top.
+ * - Now playing: removed small QR button on the right.
  */
 
 (function hardResetViaUrl() {
@@ -104,22 +106,18 @@ function useFavorites(){
 export default function App(){
   const toast = useToast();
 
-  // Guest view from URL (?guest=1). Our QR uses this.
   const isGuestView = useMemo(() => {
     try { return new URL(window.location.href).searchParams.get("guest") === "1"; }
     catch { return false; }
   }, []);
 
-  // Collapsible sections
   const [collapsedSearch, setCollapsedSearch] = useState(false);
   const [collapsedChat, setCollapsedChat] = useState(false);
 
-  // Search (serverless) + client rate-limit
   const [search, setSearch] = useState("");
   const [results, setResults] = useState([]); const [loading, setLoading] = useState(false);
   const [error, setError] = useState(""); const [previewId, setPreviewId] = useState("");
 
-  // Favorites state
   const { list: favs, toggle: toggleFav, remove: removeFav, has: hasFav } = useFavorites();
   const [searchTab, setSearchTab] = useState("search"); // 'search' | 'favorites'
 
@@ -149,11 +147,9 @@ export default function App(){
     finally{ setLoading(false); }
   }
 
-  // Firebase config (allow override but default baked)
   const [fbConfig, setFbConfig] = useLocalSetting("pdj_fb_config", "");
   const fbCfg = useMemo(()=> parseFirebaseJson(fbConfig) || DEFAULT_FB_CFG, [fbConfig]);
 
-  // Firebase ESM imports
   const [fdb, setFdb] = useState(null);
   useEffect(()=>{ let cancelled=false;
     async function init(){
@@ -176,11 +172,10 @@ export default function App(){
     init(); return ()=>{ cancelled=true; };
   },[fbCfg]);
 
-  // Room + presence (SESSION for name/room; persistent id for presence)
   const [roomCode, setRoomCode] = useSessionSetting("pdj_room", "");
   const [displayName, setDisplayName] = useSessionSetting("pdj_name", "Guest"+randomId(3));
   const [clientId] = useLocalSetting("pdj_client", randomId(6));
-  const [isHost, setIsHost] = useState(false); // not persisted
+  const [isHost, setIsHost] = useState(false);
   const [connected, setConnected] = useState(false);
   const [queue, setQueue] = useState([]); const [nowPlaying, setNowPlaying] = useState(null);
   const [paused, setPaused] = useState(false);
@@ -192,17 +187,14 @@ export default function App(){
   const [skipMap, setSkipMap] = useState({}); const skipCount = Object.keys(skipMap||{}).length;
   const meVoted = !!skipMap[displayName];
 
-  // Chat
   const [chat, setChat] = useState([]);
   const [chatText, setChatText] = useState("");
   const chatBoxRef = useRef(null);
 
-  // refs to DB paths
   const rQueue = useRef(null), rNow = useRef(null), rCtl = useRef(null), rSkip = useRef(null);
   const rPresence = useRef(null), rPresenceEntry = useRef(null), rChat = useRef(null);
   const hbTimer = useRef(null);
 
-  // Room URL (host) and Guest URL (adds ?guest=1)
   const roomUrl = useMemo(()=>{ const u=new URL(window.location.href); if(roomCode) u.searchParams.set("room", roomCode); else u.searchParams.delete("room"); u.searchParams.delete("guest"); return u.toString(); },[roomCode]);
   const guestRoomUrl = useMemo(()=>{ const u=new URL(roomUrl); u.searchParams.set("guest","1"); return u.toString(); },[roomUrl]);
 
@@ -229,13 +221,11 @@ export default function App(){
 
     rQueue.current=qRef; rNow.current=nRef; rCtl.current=cRef; rSkip.current=sRef; rPresence.current=pRef; rChat.current=chRef;
 
-    // queue / now / control / skipVotes
     onValue(qRef, (s)=>{ try{ const v=s?.val()||{}; const items = Array.isArray(v)? v.filter(Boolean): Object.values(v).filter(Boolean); items.sort((a,b)=>(b.votes||0)-(a.votes||0)); setQueue(items||[]);}catch{ setQueue([]);} });
     onValue(nRef, (s)=>{ try{ setNowPlaying(s?.val()||null);}catch{ setNowPlaying(null);} });
     onValue(cRef, (s)=>{ try{ setPaused(!!((s?.val()||{}).paused)); }catch{ setPaused(false);} });
     onValue(sRef, (s)=>{ try{ setSkipMap(s?.val()||{});}catch{ setSkipMap({}); } });
 
-    // presence
     try{
       const meRef = child(pRef, clientId);
       rPresenceEntry.current = meRef;
@@ -258,7 +248,6 @@ export default function App(){
       });
     }catch(e){ console.warn("presence error", e); }
 
-    // chat listener
     onValue(chRef, (s)=>{
       try{
         const v = s?.val() || {};
@@ -271,7 +260,6 @@ export default function App(){
     setConnected(true);
   };
 
-  // If name changes after joining, update my presence.name
   useEffect(()=>{ (async ()=>{
     if(!fdb || !rPresenceEntry.current) return;
     try{ await fdb.update(rPresenceEntry.current, { name: displayName || "Guest" }); }catch{}
@@ -280,7 +268,6 @@ export default function App(){
   const createRoom = ()=> joinRoom(randomId(4));
   const sanitizeId = (id="")=> id.replace(/[.#$\[\]]/g,'_');
 
-  // add to queue with dup guard + cap
   const addToQueue = async (video)=>{
     if(!rQueue.current){ alert("Join a room first."); return; }
     const id = `yt:${video.id}`;
@@ -300,7 +287,6 @@ export default function App(){
     }catch(e){ console.warn(e); }
   };
 
-  // DJ controls
   const startNext = async ()=>{
     if(!isHost||!rQueue.current||!rNow.current) return;
     const next = [...(queue||[])].sort((a,b)=>(b.votes||0)-(a.votes||0))[0];
@@ -308,7 +294,7 @@ export default function App(){
     try{
       await fdb.set(rNow.current, { id: next.id, title: next.title, thumb: next.thumb, provider:'youtube', startedAt: Date.now() });
       await fdb.remove(fdb.child(rQueue.current, sanitizeId(next.id)));
-      if(rSkip.current) await fdb.remove(rSkip.current); // clear skip votes
+      if(rSkip.current) await fdb.remove(rSkip.current);
     }catch(e){ console.warn(e); }
   };
   const clearQueue = async ()=>{
@@ -324,7 +310,6 @@ export default function App(){
     try{ await fdb.runTransaction(rCtl.current, ctl=>{ ctl=ctl||{}; ctl.paused=!ctl.paused; return ctl; }); }catch(e){}
   };
 
-  // Vote-to-skip
   const [skipBtnBusy, setSkipBtnBusy] = useState(false);
   const toggleSkipVote = async ()=>{
     if(!rSkip.current || skipBtnBusy) return;
@@ -340,7 +325,6 @@ export default function App(){
     if(skipCount >= requiredSkip && nowPlaying){ startNext(); }
   }, [skipCount, requiredSkip, isHost]); // eslint-disable-line
 
-  // Host playback (YouTube)
   const ytReady = useYouTubeApi(); const ytRef = useRef(null); const ytPlayer = useRef(null);
   useEffect(()=>{ if(!ytReady||!isHost) return; if(ytPlayer.current) return;
     try{
@@ -357,7 +341,6 @@ export default function App(){
   },[nowPlaying,paused,isHost]);
   useEffect(()=>{ if(!ytPlayer.current||!isHost) return; try{ paused? ytPlayer.current.pauseVideo(): ytPlayer.current.playVideo(); }catch{} },[paused,isHost]);
 
-  // Auto-join if ?room=XXXX
   useEffect(()=>{ if(!fdb) return; const url=new URL(window.location.href); const r=url.searchParams.get("room"); if(r && !connected) joinRoom(r); },[connected,fdb]);
 
   function resetApp(){
@@ -367,7 +350,6 @@ export default function App(){
     try{ localStorage.clear(); }catch{}; location.reload();
   }
 
-  // Chat send
   const [chatSendBusy, setChatSendBusy] = useState(false);
   const sendChat = async ()=>{
     const text = chatText.trim().slice(0,500);
@@ -383,7 +365,6 @@ export default function App(){
   };
   useEffect(()=>{ if(chatBoxRef.current){ chatBoxRef.current.scrollTop = chatBoxRef.current.scrollHeight; } },[chat]);
 
-  // --- UI ---
   const namesPreview = activeNames.slice(0,3).join(", ");
   const moreNames = Math.max(0, activeNames.length - 3);
 
@@ -426,7 +407,6 @@ export default function App(){
                 )}
               </div>
 
-              {/* Guest view: only Show QR + tiny hint on small screens */}
               {isGuestView ? (
                 <>
                   <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={()=>setShowQr(true)}>
@@ -444,7 +424,6 @@ export default function App(){
                   )}
                 </>
               ) : (
-                /* DJ view */
                 <>
                   <input
                     className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 w-28"
@@ -468,13 +447,7 @@ export default function App(){
                 </>
               )}
             </div>
-
-            {/* Share link: DJ only */}
-            {(connected && !isGuestView) && (
-              <div className="mt-3 text-sm opacity-80">
-                Share this room: <a className="underline break-all" href={guestRoomUrl}>{guestRoomUrl}</a>
-              </div>
-            )}
+            {/* (Removed) Share this room link for DJ */}
           </div>
 
           {/* Search (collapsible + tabs) */}
@@ -580,7 +553,7 @@ export default function App(){
                       </div>
                     </div>
                   </div>
-                  {!isGuestView && <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>setShowQr(true)}>QR</button>}
+                  {/* (Removed) tiny QR button on the right */}
                 </div>
               </div>
             )}
@@ -604,7 +577,7 @@ export default function App(){
             </ul>
           </div>
 
-          {/* Chat (collapsible) */}
+          {/* Chat */}
           <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-lg font-bold">Chat</h2>
@@ -638,7 +611,6 @@ export default function App(){
             )}
           </div>
 
-          {/* Inline preview */}
           {previewId && (
             <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
               <div className="flex items-center justify-between mb-2">
@@ -654,7 +626,6 @@ export default function App(){
 
         {/* RIGHT: Settings (DJ only) & Host Player */}
         <section className="space-y-6">
-          {/* Hide Settings for guests */}
           {!isGuestView && (
             <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
               <h2 className="text-lg font-bold mb-2">Settings</h2>
@@ -681,7 +652,7 @@ export default function App(){
         </section>
       </main>
 
-      {/* QR modal (uses guest URL) */}
+      {/* QR modal (still available via buttons elsewhere) */}
       {showQr && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl p-4 w-full max-w-sm">
@@ -702,7 +673,6 @@ export default function App(){
         </div>
       )}
 
-      {/* People modal */}
       {showPeople && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl p-4 w-full max-w-sm">
