@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — session name/room; guest view hides DJ controls
- *  - Guests (opening a link with ?guest=1 — which the QR uses) do NOT see:
- *      • “I’m the DJ (plays audio)”
- *      • The “Share this room” link
+/** Party DJ — guest view cleanup
+ *  Guests (links with ?guest=1) now see:
+ *   - Name field + Show QR button only
+ *   - No ROOM input, Join/Create, DJ toggle, or Share link
  */
 
 (function hardResetViaUrl() {
@@ -93,7 +93,7 @@ const DEFAULT_FB_CFG = {
 export default function App(){
   const toast = useToast();
 
-  // Detect guest view from URL (?guest=1). The QR we show includes this.
+  // Guest view from URL (?guest=1). Our QR uses this.
   const isGuestView = useMemo(() => {
     try { return new URL(window.location.href).searchParams.get("guest") === "1"; }
     catch { return false; }
@@ -197,7 +197,7 @@ export default function App(){
     if(!fdb?.db){ alert("Firebase not ready. Reload the page."); return; }
     const { db, ref, child, onValue, set, update, remove, onDisconnect } = fdb;
 
-    const safe = (code||roomCode||"").trim().toUpperCase(); if(!safe){ alert("Enter room code"); return; }
+    const safe = (code||roomCode||"").trim().toUpperCase(); if(!safe){ if(isGuestView){ toast.show("Ask the DJ for the QR."); } else { alert("Enter room code"); } return; }
     setRoomCode(safe);
 
     const baseRef = ref(db, `rooms/${safe}`);
@@ -252,7 +252,7 @@ export default function App(){
     setConnected(true);
   };
 
-  // If name changes after joining, update my presence.name once
+  // If name changes after joining, update my presence.name
   useEffect(()=>{ (async ()=>{
     if(!fdb || !rPresenceEntry.current) return;
     try{ await fdb.update(rPresenceEntry.current, { name: displayName || "Guest" }); }catch{}
@@ -349,15 +349,18 @@ export default function App(){
   }
 
   // Chat send
+  const [chatSendBusy, setChatSendBusy] = useState(false);
   const sendChat = async ()=>{
     const text = chatText.trim().slice(0,500);
     if(!text) return;
     if(!rChat.current){ alert("Join a room first."); return; }
+    setChatSendBusy(true);
     try{
       const newRef = fdb.push(rChat.current);
       await fdb.set(newRef, { id: newRef.key, name: displayName || "Guest", text, ts: Date.now() });
       setChatText("");
     }catch(e){ console.warn("chat send failed", e); toast.show("Couldn’t send"); }
+    finally{ setChatSendBusy(false); }
   };
   useEffect(()=>{ if(chatBoxRef.current){ chatBoxRef.current.scrollTop = chatBoxRef.current.scrollHeight; } },[chat]);
 
@@ -389,18 +392,53 @@ export default function App(){
           {/* Join */}
           <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
             <div className="flex flex-wrap items-center gap-2">
-              <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700" placeholder="Your name" value={displayName} onChange={(e)=>setDisplayName(e.target.value)} />
-              <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 w-28" placeholder="ROOM" value={roomCode} onChange={(e)=>setRoomCode(e.target.value.toUpperCase())} />
-              <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold" onClick={()=>joinRoom()}>Join</button>
-              {!isGuestView && <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={createRoom}>Create</button>}
-              {!isGuestView && <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={()=>setShowQr(true)}>Show QR</button>}
-              {!isGuestView && (
-                <label className="ml-auto inline-flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={isHost} onChange={(e)=> setIsHost(e.target.checked)} />
-                  I'm the DJ (plays audio)
-                </label>
+              {/* Name is always visible */}
+              <input
+                className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700"
+                placeholder="Your name"
+                value={displayName}
+                onChange={(e)=>setDisplayName(e.target.value)}
+              />
+
+              {/* Guest view: only Show QR */}
+              {isGuestView ? (
+                <>
+                  <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={()=>setShowQr(true)}>
+                    Show QR
+                  </button>
+                  {!connected && (
+                    <span className="text-xs opacity-70">
+                      Open this from the DJ’s QR/link to join a room.
+                    </span>
+                  )}
+                </>
+              ) : (
+                /* DJ view: room/join/create/qr/dj toggle */
+                <>
+                  <input
+                    className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 w-28"
+                    placeholder="ROOM"
+                    value={roomCode}
+                    onChange={(e)=>setRoomCode(e.target.value.toUpperCase())}
+                  />
+                  <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold" onClick={()=>joinRoom()}>
+                    Join
+                  </button>
+                  <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={createRoom}>
+                    Create
+                  </button>
+                  <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={()=>setShowQr(true)}>
+                    Show QR
+                  </button>
+                  <label className="ml-auto inline-flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={isHost} onChange={(e)=> setIsHost(e.target.checked)} />
+                    I'm the DJ (plays audio)
+                  </label>
+                </>
               )}
             </div>
+
+            {/* Share link: DJ only */}
             {(connected && !isGuestView) && (
               <div className="mt-3 text-sm opacity-80">
                 Share this room: <a className="underline break-all" href={guestRoomUrl}>{guestRoomUrl}</a>
@@ -493,7 +531,7 @@ export default function App(){
             </div>
             <div className="mt-2 flex gap-2">
               <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 flex-1 outline-none" placeholder="Type a message…" value={chatText} onChange={(e)=>setChatText(e.target.value)} onKeyDown={(e)=>{ if(e.key==='Enter') sendChat(); }} />
-              <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold" onClick={sendChat}>Send</button>
+              <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold" onClick={sendChat} disabled={chatSendBusy}>Send</button>
             </div>
             <div className="text-xs opacity-60 mt-1">Be nice ✌️</div>
           </div>
@@ -554,7 +592,7 @@ export default function App(){
               <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={copyLink}>Copy link</button>
               <a className="px-3 py-2 rounded-xl border border-slate-700 text-center" href={qrSrc} download={`party-dj-${roomCode||"room"}.png`}>Download QR</a>
             </div>
-            {!roomCode && <div className="mt-3 text-xs text-rose-300">Tip: set a ROOM code or click Create first.</div>}
+            {!roomCode && <div className="mt-3 text-xs text-rose-300">Tip: open from the DJ’s QR so the room is set.</div>}
           </div>
         </div>
       )}
