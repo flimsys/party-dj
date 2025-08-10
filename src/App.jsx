@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — session name/room + no DJ persistence
- *  - Name & Room use sessionStorage (cleared when the tab/browser closes)
- *  - "I'm the DJ" starts unchecked and is NOT saved
- *  - Everything else (queue, chat, presence, guest search, skip vote) unchanged
+/** Party DJ — session name/room; guest view hides DJ controls
+ *  - Guests (opening a link with ?guest=1 — which the QR uses) do NOT see:
+ *      • “I’m the DJ (plays audio)”
+ *      • The “Share this room” link
  */
 
 (function hardResetViaUrl() {
@@ -93,6 +93,12 @@ const DEFAULT_FB_CFG = {
 export default function App(){
   const toast = useToast();
 
+  // Detect guest view from URL (?guest=1). The QR we show includes this.
+  const isGuestView = useMemo(() => {
+    try { return new URL(window.location.href).searchParams.get("guest") === "1"; }
+    catch { return false; }
+  }, []);
+
   // Search (serverless) + client rate-limit
   const [search, setSearch] = useState("");
   const [results, setResults] = useState([]); const [loading, setLoading] = useState(false);
@@ -177,13 +183,15 @@ export default function App(){
   const rPresence = useRef(null), rPresenceEntry = useRef(null), rChat = useRef(null);
   const hbTimer = useRef(null);
 
-  const roomUrl = useMemo(()=>{ const u=new URL(window.location.href); if(roomCode) u.searchParams.set("room", roomCode); else u.searchParams.delete("room"); return u.toString(); },[roomCode]);
+  // Room URL (host) and Guest URL (adds ?guest=1)
+  const roomUrl = useMemo(()=>{ const u=new URL(window.location.href); if(roomCode) u.searchParams.set("room", roomCode); else u.searchParams.delete("room"); u.searchParams.delete("guest"); return u.toString(); },[roomCode]);
+  const guestRoomUrl = useMemo(()=>{ const u=new URL(roomUrl); u.searchParams.set("guest","1"); return u.toString(); },[roomUrl]);
 
   const [showQr, setShowQr] = useState(false);
   const [showPeople, setShowPeople] = useState(false);
-  const qrSrc = useMemo(()=> `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(roomUrl || window.location.href)}`, [roomUrl]);
+  const qrSrc = useMemo(()=> `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(guestRoomUrl || window.location.href)}`, [guestRoomUrl]);
 
-  const copyLink = async ()=>{ try{ await navigator.clipboard.writeText(roomUrl); toast.show("Link copied!"); } catch{ prompt("Copy this link", roomUrl); } };
+  const copyLink = async ()=>{ const link = guestRoomUrl; try{ await navigator.clipboard.writeText(link); toast.show("Link copied!"); } catch{ prompt("Copy this link", link); } };
 
   const joinRoom = async (code)=>{
     if(!fdb?.db){ alert("Firebase not ready. Reload the page."); return; }
@@ -384,14 +392,20 @@ export default function App(){
               <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700" placeholder="Your name" value={displayName} onChange={(e)=>setDisplayName(e.target.value)} />
               <input className="px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 w-28" placeholder="ROOM" value={roomCode} onChange={(e)=>setRoomCode(e.target.value.toUpperCase())} />
               <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold" onClick={()=>joinRoom()}>Join</button>
-              <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={createRoom}>Create</button>
-              <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={()=>setShowQr(true)}>Show QR</button>
-              <label className="ml-auto inline-flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={isHost} onChange={(e)=> setIsHost(e.target.checked)} />
-                I'm the DJ (plays audio)
-              </label>
+              {!isGuestView && <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={createRoom}>Create</button>}
+              {!isGuestView && <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={()=>setShowQr(true)}>Show QR</button>}
+              {!isGuestView && (
+                <label className="ml-auto inline-flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={isHost} onChange={(e)=> setIsHost(e.target.checked)} />
+                  I'm the DJ (plays audio)
+                </label>
+              )}
             </div>
-            {connected && <div className="mt-3 text-sm opacity-80">Share this room: <a className="underline break-all" href={roomUrl}>{roomUrl}</a></div>}
+            {(connected && !isGuestView) && (
+              <div className="mt-3 text-sm opacity-80">
+                Share this room: <a className="underline break-all" href={guestRoomUrl}>{guestRoomUrl}</a>
+              </div>
+            )}
           </div>
 
           {/* Search */}
@@ -440,7 +454,7 @@ export default function App(){
                       </div>
                     </div>
                   </div>
-                  <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>setShowQr(true)}>QR</button>
+                  {!isGuestView && <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>setShowQr(true)}>QR</button>}
                 </div>
               </div>
             )}
@@ -464,7 +478,7 @@ export default function App(){
             </ul>
           </div>
 
-          {/* Chat for everyone */}
+          {/* Chat */}
           <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
             <h2 className="text-lg font-bold mb-2">Chat</h2>
             <div ref={chatBoxRef} className="h-64 overflow-y-auto space-y-2 p-2 bg-slate-900/60 rounded-xl border border-slate-800">
@@ -524,7 +538,7 @@ export default function App(){
         </section>
       </main>
 
-      {/* QR modal */}
+      {/* QR modal (uses guest URL) */}
       {showQr && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl p-4 w-full max-w-sm">
@@ -535,7 +549,7 @@ export default function App(){
             <div className="w-full flex items-center justify-center">
               <img src={qrSrc} alt="Room QR" className="rounded-xl border border-slate-800" />
             </div>
-            <div className="mt-3 text-xs break-all opacity-80">{roomUrl}</div>
+            <div className="mt-3 text-xs break-all opacity-80">{guestRoomUrl}</div>
             <div className="mt-3 flex gap-2">
               <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={copyLink}>Copy link</button>
               <a className="px-3 py-2 rounded-xl border border-slate-700 text-center" href={qrSrc} download={`party-dj-${roomCode||"room"}.png`}>Download QR</a>
