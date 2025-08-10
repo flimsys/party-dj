@@ -389,9 +389,18 @@ export default function App(){
       <main className="max-w-6xl mx-auto px-4 py-6 grid lg:grid-cols-3 gap-6">
         {/* LEFT: Join, Search, Queue, Chat, Preview */}
         <section className="lg:col-span-2 space-y-6">
-          {/* Join */}
-          <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
-            <div className="flex flex-wrap items-center gap-2">
+          
+          {/* Room controls */}
+<div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
+  <div className="flex items-center justify-between mb-2">
+    <h2 className="text-lg font-bold">Room</h2>
+    <div className="text-xs opacity-70">
+      {connected ? <>Joined <b>{roomCode || "—"}</b>{isHost ? " • DJ" : ""}</> : "Not joined"}
+    </div>
+  </div>
+  <div className="flex flex-wrap items-center gap-2">
+
+              
               {/* Name */}
               <div className="flex items-center gap-2">
                 <input
