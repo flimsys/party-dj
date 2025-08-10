@@ -1,10 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — Favorites + guest name hint + (share/QR removed per DJ request)
- * - Favorites tab in Search (localStorage per device).
- * - Guests see a hint beside their name.
- * - DJ: removed “Share this room” link at top.
- * - Now playing: removed small QR button on the right.
+/** Party DJ — favorites now per-session + auto-DJ on first load
+ * - Favorites are stored in sessionStorage (clear when app/browser restarts).
+ * - “I’m the DJ” checkbox is auto-checked for DJ view (and unchecked for guests).
+ * - All other features unchanged: chat, presence, skip votes, QR, etc.
  */
 
 (function hardResetViaUrl() {
@@ -91,14 +90,22 @@ const DEFAULT_FB_CFG = {
   measurementId: "G-58NT1F2QZM"
 };
 
-// ---- Favorites (local) ----
+// ---- Favorites (per-session; clears when the app/browser restarts) ----
 function useFavorites(){
   const KEY = "pdj_favorites";
-  const [list, setList] = useState(()=>{ try{ return JSON.parse(localStorage.getItem(KEY)||"[]"); }catch{return [];}});
-  useEffect(()=>{ try{ localStorage.setItem(KEY, JSON.stringify(list)); }catch{} }, [list]);
-  const has = id => list.some(x=>x.id===id);
-  const add = v => setList(prev => prev.some(x=>x.id===v.id) ? prev : [...prev, { id:v.id, title:v.title, thumb:v.thumb }]);
-  const remove = id => setList(prev => prev.filter(x=>x.id!==id));
+  const [list, setList] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem(KEY) || "[]"); }
+    catch { return []; }
+  });
+  useEffect(() => {
+    try { sessionStorage.setItem(KEY, JSON.stringify(list)); } catch {}
+  }, [list]);
+
+  const has = id => list.some(x => x.id === id);
+  const add = v => setList(prev =>
+    prev.some(x => x.id === v.id) ? prev : [...prev, { id:v.id, title:v.title, thumb:v.thumb }]
+  );
+  const remove = id => setList(prev => prev.filter(x => x.id !== id));
   const toggle = v => has(v.id) ? remove(v.id) : add(v);
   return { list, add, remove, toggle, has, setList };
 }
@@ -175,7 +182,9 @@ export default function App(){
   const [roomCode, setRoomCode] = useSessionSetting("pdj_room", "");
   const [displayName, setDisplayName] = useSessionSetting("pdj_name", "Guest"+randomId(3));
   const [clientId] = useLocalSetting("pdj_client", randomId(6));
-  const [isHost, setIsHost] = useState(false);
+  // ✅ Auto-check for DJ view, unchecked for guest view:
+  const [isHost, setIsHost] = useState(() => !isGuestView);
+
   const [connected, setConnected] = useState(false);
   const [queue, setQueue] = useState([]); const [nowPlaying, setNowPlaying] = useState(null);
   const [paused, setPaused] = useState(false);
@@ -345,9 +354,12 @@ export default function App(){
 
   function resetApp(){
     if(!confirm("Clear saved data and reset the app?")) return;
-    ['pdj_fb_config','pdj_room','pdj_name','pdj_client','pdj_search_times','pdj_favorites'].forEach(k=>{ try{localStorage.removeItem(k);}catch{} });
-    try{ sessionStorage.clear(); }catch{}
-    try{ localStorage.clear(); }catch{}; location.reload();
+    ['pdj_fb_config','pdj_room','pdj_name','pdj_client','pdj_search_times','pdj_favorites']
+      .forEach(k=>{ try{localStorage.removeItem(k);}catch{} });
+    try { sessionStorage.removeItem('pdj_favorites'); } catch {}
+    try { sessionStorage.clear(); } catch {}
+    try { localStorage.clear(); } catch {}
+    location.reload();
   }
 
   const [chatSendBusy, setChatSendBusy] = useState(false);
@@ -387,20 +399,17 @@ export default function App(){
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-6 grid lg:grid-cols-3 gap-6">
-        {/* LEFT: Join, Search, Queue, Chat, Preview */}
+        {/* LEFT: Room, Search, Queue, Chat, Preview */}
         <section className="lg:col-span-2 space-y-6">
-          
           {/* Room controls */}
-<div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
-  <div className="flex items-center justify-between mb-2">
-    <h2 className="text-lg font-bold">Room</h2>
-    <div className="text-xs opacity-70">
-      {connected ? <>Joined <b>{roomCode || "—"}</b>{isHost ? " • DJ" : ""}</> : "Not joined"}
-    </div>
-  </div>
-  <div className="flex flex-wrap items-center gap-2">
-
-              
+          <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-lg font-bold">Room</h2>
+              <div className="text-xs opacity-70">
+                {connected ? <>Joined <b>{roomCode || "—"}</b>{isHost ? " • DJ" : ""}</> : "Not joined"}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
               {/* Name */}
               <div className="flex items-center gap-2">
                 <input
@@ -456,7 +465,6 @@ export default function App(){
                 </>
               )}
             </div>
-            {/* (Removed) Share this room link for DJ */}
           </div>
 
           {/* Search (collapsible + tabs) */}
@@ -562,7 +570,6 @@ export default function App(){
                       </div>
                     </div>
                   </div>
-                  {/* (Removed) tiny QR button on the right */}
                 </div>
               </div>
             )}
@@ -661,7 +668,7 @@ export default function App(){
         </section>
       </main>
 
-      {/* QR modal (still available via buttons elsewhere) */}
+      {/* QR modal */}
       {showQr && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl p-4 w-full max-w-sm">
@@ -670,12 +677,12 @@ export default function App(){
               <button className="text-sm underline" onClick={()=>setShowQr(false)}>Close</button>
             </div>
             <div className="w-full flex items-center justify-center">
-              <img src={qrSrc} alt="Room QR" className="rounded-xl border border-slate-800" />
+              <img src={`https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(guestRoomUrl || window.location.href)}`} alt="Room QR" className="rounded-xl border border-slate-800" />
             </div>
             <div className="mt-3 text-xs break-all opacity-80">{guestRoomUrl}</div>
             <div className="mt-3 flex gap-2">
               <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={copyLink}>Copy link</button>
-              <a className="px-3 py-2 rounded-xl border border-slate-700 text-center" href={qrSrc} download={`party-dj-${roomCode||"room"}.png`}>Download QR</a>
+              <a className="px-3 py-2 rounded-xl border border-slate-700 text-center" href={`https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(guestRoomUrl || window.location.href)}`} download={`party-dj-${roomCode||"room"}.png`}>Download QR</a>
             </div>
             {!roomCode && <div className="mt-3 text-xs text-rose-300">Tip: open from the DJ’s QR so the room is set.</div>}
           </div>
