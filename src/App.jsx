@@ -1,11 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — active listener NAMES + simple chat
- *  Still includes:
- *   - Presence count + dynamic 50% skip
- *   - Serverless YouTube search (guests can search)
- *   - DJ controls, QR, preview, duplicate guard, per-user cap
- *   - Baked Firebase config (guests don’t paste)
+/** Party DJ — session name/room + no DJ persistence
+ *  - Name & Room use sessionStorage (cleared when the tab/browser closes)
+ *  - "I'm the DJ" starts unchecked and is NOT saved
+ *  - Everything else (queue, chat, presence, guest search, skip vote) unchanged
  */
 
 (function hardResetViaUrl() {
@@ -40,6 +38,11 @@ const SKIP_THRESHOLD = (active) => Math.max(1, Math.ceil(active * 0.5)); // 50%
 function useLocalSetting(key, initial = "") {
   const [v, setV] = useState(() => localStorage.getItem(key) ?? initial);
   useEffect(() => { try { localStorage.setItem(key, v ?? ""); } catch {} }, [key, v]);
+  return [v, setV];
+}
+function useSessionSetting(key, initial = "") {
+  const [v, setV] = useState(() => sessionStorage.getItem(key) ?? initial);
+  useEffect(() => { try { sessionStorage.setItem(key, v ?? ""); } catch {} }, [key, v]);
   return [v, setV];
 }
 function useToast() {
@@ -126,7 +129,7 @@ export default function App(){
   const fbCfg = useMemo(()=> parseFirebaseJson(fbConfig) || DEFAULT_FB_CFG, [fbConfig]);
 
   // Firebase ESM imports
-  const [fdb, setFdb] = useState(null); // { db, ref, child, onValue, set, update, runTransaction, remove, onDisconnect, push }
+  const [fdb, setFdb] = useState(null);
   useEffect(()=>{ let cancelled=false;
     async function init(){
       if(!fbCfg) return;
@@ -148,17 +151,17 @@ export default function App(){
     init(); return ()=>{ cancelled=true; };
   },[fbCfg]);
 
-  // Room + presence
-  const [roomCode, setRoomCode] = useLocalSetting("pdj_room", "");
-  const [displayName, setDisplayName] = useLocalSetting("pdj_name", "Guest"+randomId(3));
+  // Room + presence (SESSION for name/room; persistent id for presence)
+  const [roomCode, setRoomCode] = useSessionSetting("pdj_room", "");
+  const [displayName, setDisplayName] = useSessionSetting("pdj_name", "Guest"+randomId(3));
   const [clientId] = useLocalSetting("pdj_client", randomId(6));
-  const [isHost, setIsHost] = useState(localStorage.getItem("pdj_is_host")==="1");
+  const [isHost, setIsHost] = useState(false); // not persisted
   const [connected, setConnected] = useState(false);
   const [queue, setQueue] = useState([]); const [nowPlaying, setNowPlaying] = useState(null);
   const [paused, setPaused] = useState(false);
 
   const [activeCount, setActiveCount] = useState(0);
-  const [activeNames, setActiveNames] = useState([]); // 👥 names
+  const [activeNames, setActiveNames] = useState([]);
   const requiredSkip = SKIP_THRESHOLD(activeCount);
 
   const [skipMap, setSkipMap] = useState({}); const skipCount = Object.keys(skipMap||{}).length;
@@ -205,7 +208,7 @@ export default function App(){
     onValue(cRef, (s)=>{ try{ setPaused(!!((s?.val()||{}).paused)); }catch{ setPaused(false);} });
     onValue(sRef, (s)=>{ try{ setSkipMap(s?.val()||{});}catch{ setSkipMap({}); } });
 
-    // presence: write my entry + heartbeat + active names/count
+    // presence
     try{
       const meRef = child(pRef, clientId);
       rPresenceEntry.current = meRef;
@@ -234,7 +237,7 @@ export default function App(){
         const v = s?.val() || {};
         const items = Object.entries(v).map(([id, m]) => ({ id, ...(m||{}) }));
         items.sort((a,b)=>(a.ts||0)-(b.ts||0));
-        setChat(items.slice(-200)); // last 200 msgs
+        setChat(items.slice(-200));
       }catch{ setChat([]); }
     });
 
@@ -295,13 +298,16 @@ export default function App(){
   };
 
   // Vote-to-skip
+  const [skipBtnBusy, setSkipBtnBusy] = useState(false);
   const toggleSkipVote = async ()=>{
-    if(!rSkip.current) return;
+    if(!rSkip.current || skipBtnBusy) return;
+    setSkipBtnBusy(true);
     const key = displayName || "Guest";
     try{
       if(meVoted) await fdb.remove(fdb.child(rSkip.current, key));
       else await fdb.set(fdb.child(rSkip.current, key), true);
     }catch(e){ console.warn(e); }
+    finally{ setSkipBtnBusy(false); }
   };
   useEffect(()=>{ if(!isHost) return; if(!rSkip.current) return;
     if(skipCount >= requiredSkip && nowPlaying){ startNext(); }
@@ -329,7 +335,8 @@ export default function App(){
 
   function resetApp(){
     if(!confirm("Clear saved data and reset the app?")) return;
-    ['pdj_fb_config','pdj_is_host','pdj_room','pdj_name','pdj_client','pdj_search_times'].forEach(k=>{ try{localStorage.removeItem(k);}catch{} });
+    ['pdj_fb_config','pdj_room','pdj_name','pdj_client','pdj_search_times'].forEach(k=>{ try{localStorage.removeItem(k);}catch{} });
+    try{ sessionStorage.clear(); }catch{}
     try{ localStorage.clear(); }catch{}; location.reload();
   }
 
@@ -344,9 +351,7 @@ export default function App(){
       setChatText("");
     }catch(e){ console.warn("chat send failed", e); toast.show("Couldn’t send"); }
   };
-  useEffect(()=>{ // auto-scroll chat
-    if(chatBoxRef.current){ chatBoxRef.current.scrollTop = chatBoxRef.current.scrollHeight; }
-  },[chat]);
+  useEffect(()=>{ if(chatBoxRef.current){ chatBoxRef.current.scrollTop = chatBoxRef.current.scrollHeight; } },[chat]);
 
   // --- UI ---
   const namesPreview = activeNames.slice(0,3).join(", ");
@@ -382,7 +387,7 @@ export default function App(){
               <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={createRoom}>Create</button>
               <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={()=>setShowQr(true)}>Show QR</button>
               <label className="ml-auto inline-flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={isHost} onChange={(e)=>{ setIsHost(e.target.checked); localStorage.setItem("pdj_is_host", e.target.checked?"1":"0"); }} />
+                <input type="checkbox" checked={isHost} onChange={(e)=> setIsHost(e.target.checked)} />
                 I'm the DJ (plays audio)
               </label>
             </div>
@@ -428,7 +433,7 @@ export default function App(){
                       <div className="text-sm opacity-70">Now playing</div>
                       <div className="font-semibold line-clamp-2">{nowPlaying.title}</div>
                       <div className="mt-2">
-                        <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={toggleSkipVote}>
+                        <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={toggleSkipVote} disabled={skipBtnBusy}>
                           {meVoted ? "Undo skip vote" : "Vote to Skip"} ({skipCount}/{requiredSkip})
                         </button>
                         <div className="text-xs opacity-70 mt-1">Skip triggers at 50% of active listeners.</div>
