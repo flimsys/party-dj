@@ -1,13 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — baked Firebase, serverless YouTube search, QR, + DJ tools
- *  Adds:
- *   1) DJ-only Skip & Clear Queue
- *   2) Duplicate prevention (adds vote instead)
- *   3) Client-side search rate limit (cooldown + per-minute cap)
- *   4) Max songs per user in queue
- *   5) Big QR on the Now Playing card
- *   6) (Rules go in Firebase console—see below)
+/** Party DJ — baked Firebase, serverless YouTube search, QR, + DJ tools + Vote-to-Skip
+ *  Already has:
+ *   - DJ Skip & Clear Queue
+ *   - Duplicate prevention (adds vote instead)
+ *   - Client search rate limit
+ *   - Max songs per user in queue
+ *   - Big QR on Now Playing
+ *   - Firebase baked config
+ *   - Serverless YouTube search (guests can search)
+ *  NEW in this version:
+ *   - Vote-to-Skip for everyone; DJ auto-skips when threshold reached
  **/
 
 // ---- quick reset by URL: add ?reset=1 ----
@@ -31,10 +34,13 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 })();
 
 // ---------- limits / knobs ----------
-const MAX_SONGS_PER_USER = 3;           // (4) max items a single user can have in queue
-const SEARCH_COOLDOWN_MS = 800;         // (3) min time between searches per browser
-const SEARCH_WINDOW_MS = 60_000;        // (3) sliding window length
-const SEARCH_MAX_PER_WINDOW = 15;       // (3) max searches per browser per minute
+const MAX_SONGS_PER_USER = 3;
+const SEARCH_COOLDOWN_MS = 800;
+const SEARCH_WINDOW_MS = 60_000;
+const SEARCH_MAX_PER_WINDOW = 15;
+
+// vote-to-skip: require this many votes to skip current song
+const SKIP_VOTES_REQUIRED = 3;
 
 // ---------- helpers ----------
 function useLocalSetting(key, initial = "") {
@@ -43,12 +49,10 @@ function useLocalSetting(key, initial = "") {
   return [v, setV];
 }
 
-// simple toast
 function useToast() {
   const [msg, setMsg] = useState("");
-  const [type, setType] = useState("info");
-  function show(m, t="info", ms=1800){ setMsg(m); setType(t); window.clearTimeout((show)._t); (show)._t=setTimeout(()=>setMsg(""), ms); }
-  return { msg, type, show };
+  function show(m, _type="info", ms=1800){ setMsg(m); window.clearTimeout((show)._t); (show)._t=setTimeout(()=>setMsg(""), ms); }
+  return { msg, show };
 }
 
 const YT_IFRAME_API = "https://www.youtube.com/iframe_api";
@@ -68,12 +72,10 @@ function useYouTubeApi() {
 
 const randomId = (n=4)=>Math.random().toString(36).slice(2,2+n).toUpperCase();
 
-/** Accepts raw JSON or a snippet containing it, tolerates curly quotes */
 function parseFirebaseJson(str) {
   if (!str) return null;
   const t = String(str).trim();
-  const a = t.indexOf("{");
-  const b = t.lastIndexOf("}");
+  const a = t.indexOf("{"); const b = t.lastIndexOf("}");
   if (a === -1 || b === -1 || b <= a) return null;
   let jsonText = t.slice(a, b + 1);
   jsonText = jsonText
@@ -98,7 +100,6 @@ const DEFAULT_FB_CFG = {
 
 // ---------- app ----------
 export default function App() {
-  // toast
   const toast = useToast();
 
   // YouTube search (via serverless function) + client rate limit
@@ -115,12 +116,10 @@ export default function App() {
     try { list = JSON.parse(localStorage.getItem(k) || "[]"); } catch {}
     list = list.filter(t => now - t <= SEARCH_WINDOW_MS);
     if (list.length && now - list[list.length-1] < SEARCH_COOLDOWN_MS) {
-      toast.show("Searching too fast—give it a sec.", "warn");
-      return false;
+      toast.show("Searching too fast—give it a sec."); return false;
     }
     if (list.length >= SEARCH_MAX_PER_WINDOW) {
-      toast.show("You’ve hit the search limit. Try again in a minute.", "warn", 2200);
-      return false;
+      toast.show("You’ve hit the search limit. Try again in a minute.", 2200); return false;
     }
     list.push(now);
     try { localStorage.setItem(k, JSON.stringify(list)); } catch {}
@@ -130,14 +129,10 @@ export default function App() {
   async function runSearch() {
     if (!search.trim()) return;
     if (!canSearchNow()) return;
-
-    setError("");
-    setResults([]);
+    setError(""); setResults([]);
     try {
       setLoading(true);
-      const res = await fetch(
-        `/.netlify/functions/youtube-search?q=${encodeURIComponent(search.trim())}`
-      );
+      const res = await fetch(`/.netlify/functions/youtube-search?q=${encodeURIComponent(search.trim())}`);
       if (!res.ok) throw new Error("Search function error");
       const data = await res.json();
       const items = (data?.items||[]).map(it=>({
@@ -148,16 +143,15 @@ export default function App() {
       setResults(items);
       if (!items.length) setError("No results. Try a different search.");
     } catch (e) {
-      console.error(e);
-      setError("Search failed. (Server function) Check deploy/env var.");
+      console.error(e); setError("Search failed. (Server function).");
     } finally { setLoading(false); }
   }
 
-  // Firebase config (baked, but allow override in Settings)
+  // Firebase config (baked, but allow override)
   const [fbConfig, setFbConfig] = useLocalSetting("pdj_fb_config", "");
   const fbCfg = useMemo(() => parseFirebaseJson(fbConfig) || DEFAULT_FB_CFG, [fbConfig]);
 
-  // Firebase (ESM CDN modules)
+  // Firebase (ESM)
   const [fdb, setFdb] = useState(null); // { db, ref, child, onValue, set, update, runTransaction, remove }
   useEffect(() => {
     let cancelled = false;
@@ -199,9 +193,13 @@ export default function App() {
   const [nowPlaying, setNowPlaying] = useState(null);
   const [paused, setPaused] = useState(false);
 
-  const rQueue = useRef(null), rNow = useRef(null), rCtl = useRef(null);
+  // vote-to-skip state
+  const [skipMap, setSkipMap] = useState({}); // { "User A": true, ... }
+  const skipCount = Object.keys(skipMap || {}).length;
+  const meVoted = !!skipMap[displayName];
 
-  // Shareable room link (keeps ?room=XXXX when you set it)
+  const rQueue = useRef(null), rNow = useRef(null), rCtl = useRef(null), rSkip = useRef(null);
+
   const roomUrl = useMemo(() => {
     const u = new URL(window.location.href);
     if (roomCode) u.searchParams.set("room", roomCode);
@@ -209,7 +207,6 @@ export default function App() {
     return u.toString();
   }, [roomCode]);
 
-  // QR state (global)
   const [showQr, setShowQr] = useState(false);
   const qrSrc = useMemo(() => {
     const url = roomUrl || window.location.href;
@@ -217,11 +214,10 @@ export default function App() {
   }, [roomUrl]);
 
   const copyLink = async () => {
-    try { await navigator.clipboard.writeText(roomUrl); toast.show("Link copied!","info"); }
+    try { await navigator.clipboard.writeText(roomUrl); toast.show("Link copied!"); }
     catch { prompt("Copy this link", roomUrl); }
   };
 
-  // Join / listeners
   const joinRoom = async (code) => {
     if (!fdb?.db) { alert("Firebase not ready. Reload the page."); return; }
     const { db, ref, child, onValue } = fdb;
@@ -233,7 +229,9 @@ export default function App() {
     const qRef = child(baseRef, "queue");
     const nRef = child(baseRef, "now");
     const cRef = child(baseRef, "control");
-    rQueue.current = qRef; rNow.current = nRef; rCtl.current = cRef;
+    const sRef = child(baseRef, "skipVotes");
+
+    rQueue.current = qRef; rNow.current = nRef; rCtl.current = cRef; rSkip.current = sRef;
 
     onValue(qRef, (s) => {
       try {
@@ -245,38 +243,32 @@ export default function App() {
     });
     onValue(nRef, (s) => { try { setNowPlaying(s?.val() || null); } catch { setNowPlaying(null); } });
     onValue(cRef, (s) => { try { setPaused(!!((s?.val()||{}).paused)); } catch { setPaused(false); } });
+    onValue(sRef, (s) => { try { setSkipMap(s?.val() || {}); } catch { setSkipMap({}); } });
 
     setConnected(true);
   };
   const createRoom = () => joinRoom(randomId(4));
 
-  // Helpers
   const sanitizeId = (id="") => id.replace(/[.#$\[\]]/g,'_');
 
-  // (2) Duplicate prevention + (4) max per user
+  // add to queue with dup guard + cap
   const addToQueue = async (video) => {
     if (!rQueue.current) { alert("Join a room first."); return; }
     const id = `yt:${video.id}`;
-    // dup guard (also check Now Playing)
     const dup = (queue || []).some(q => q.id === id) || (nowPlaying?.id === id);
     if (dup) {
-      // Upvote instead of adding
       await vote(id, +1);
-      toast.show("Already in queue — upvoted.", "info");
+      toast.show("Already in queue — upvoted.");
       return;
     }
-    // per-user cap
     const mine = (queue || []).filter(q => (q.addedBy || "") === displayName).length;
-    if (mine >= MAX_SONGS_PER_USER) {
-      toast.show(`Limit reached: max ${MAX_SONGS_PER_USER} in queue.`, "warn");
-      return;
-    }
+    if (mine >= MAX_SONGS_PER_USER) { toast.show(`Limit reached: max ${MAX_SONGS_PER_USER} in queue.`); return; }
 
     const { set, child } = fdb;
     const safeId = sanitizeId(id);
     const item = { id, provider:'youtube', title: video.title, thumb: video.thumb, addedBy: displayName, votes:1, ts: Date.now() };
     try { await set(child(rQueue.current, safeId), item); }
-    catch(e){ console.warn(e); toast.show("Couldn’t add. Try again.", "warn"); }
+    catch(e){ console.warn(e); toast.show("Couldn’t add. Try again."); }
   };
 
   const vote = async (id, delta=1) => {
@@ -292,35 +284,56 @@ export default function App() {
     } catch (e) { console.warn(e); }
   };
 
-  // (1) DJ: Skip & Clear
+  // DJ controls
+  const { set, remove, child, runTransaction } = fdb || {};
   const startNext = async () => {
     if (!isHost || !rQueue.current || !rNow.current) return;
-    const { set, remove, child } = fdb;
     const next = [...(queue||[])].sort((a,b)=>(b.votes||0)-(a.votes||0))[0];
-    if (!next) { toast.show("Queue is empty.", "info"); return; }
+    if (!next) { toast.show("Queue is empty."); return; }
     try {
       await set(rNow.current, { id: next.id, title: next.title, thumb: next.thumb, provider:'youtube', startedAt: Date.now() });
       await remove(child(rQueue.current, sanitizeId(next.id)));
+      if (rSkip.current) await remove(rSkip.current); // clear skip votes on next
     } catch(e){ console.warn(e); }
   };
 
   const clearQueue = async () => {
     if (!isHost || !rQueue.current) return;
     if (!window.confirm("Clear the entire queue?")) return;
-    const { remove, child } = fdb;
     try {
       for (const it of (queue||[])) {
         await remove(child(rQueue.current, sanitizeId(it.id)));
       }
-      toast.show("Queue cleared.", "info");
-    } catch (e) { console.warn(e); toast.show("Couldn’t clear queue.", "warn"); }
+      toast.show("Queue cleared.");
+    } catch (e) { console.warn(e); toast.show("Couldn’t clear queue."); }
   };
 
   const togglePause = async () => {
     if (!isHost || !rCtl.current) return;
-    const { runTransaction } = fdb;
     try { await runTransaction(rCtl.current, (ctl)=>{ ctl=ctl||{}; ctl.paused=!ctl.paused; return ctl; }); } catch(e){}
   };
+
+  // Vote-to-skip actions
+  const toggleSkipVote = async () => {
+    if (!rSkip.current) return;
+    try {
+      const key = displayName || "Guest";
+      if (meVoted) {
+        await remove(child(rSkip.current, key));
+      } else {
+        await set(child(rSkip.current, key), true);
+      }
+    } catch (e) { console.warn(e); }
+  };
+
+  // Auto-skip when threshold reached (host only)
+  useEffect(() => {
+    if (!isHost) return;
+    if (!rSkip.current) return;
+    if (skipCount >= SKIP_VOTES_REQUIRED) {
+      startNext(); // startNext clears skip votes
+    }
+  }, [skipCount, isHost]); // eslint-disable-line
 
   // Host playback (YouTube)
   const ytReady = useYouTubeApi();
@@ -355,7 +368,7 @@ export default function App() {
     try { paused ? ytPlayer.current.pauseVideo() : ytPlayer.current.playVideo(); } catch {}
   }, [paused, isHost]);
 
-  // Auto-join if ?room=XXXX in URL
+  // Auto-join if ?room=XXXX
   useEffect(() => {
     if (!fdb) return;
     const url = new URL(window.location.href);
@@ -363,7 +376,6 @@ export default function App() {
     if (r && !connected) joinRoom(r);
   }, [connected, fdb]);
 
-  // Reset button
   function resetApp() {
     if (!window.confirm('Clear saved data and reset the app?')) return;
     ['pdj_fb_config','pdj_is_host','pdj_room','pdj_name','pdj_search_times'].forEach(k=>{ try{localStorage.removeItem(k);}catch{} });
@@ -374,7 +386,6 @@ export default function App() {
   // ---------- UI ----------
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
-      {/* toast */}
       {toast.msg && (
         <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 px-3 py-2 rounded-xl border border-slate-700 bg-slate-900/90 text-sm">
           {toast.msg}
@@ -445,135 +456,3 @@ export default function App() {
                 </div>
               ))}
             </div>
-          </div>
-
-          {/* Queue */}
-          <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
-            <div className="flex items-center gap-3 mb-3">
-              <h2 className="text-lg font-bold">Queue</h2>
-              {isHost && <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={startNext}>Start next</button>}
-              {isHost && <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={togglePause}>{paused?"Resume":"Pause"}</button>}
-              {isHost && <button className="px-2 py-1 rounded-lg border border-slate-700 ml-auto" onClick={clearQueue}>Clear queue</button>}
-            </div>
-            {nowPlaying && (
-              <div className="mb-4 p-3 bg-slate-900/60 rounded-xl border border-slate-800">
-                <div className="flex items-center gap-3 justify-between">
-                  <div className="flex items-center gap-3">
-                    <img src={nowPlaying.thumb} className="w-24 h-14 rounded object-cover" />
-                    <div>
-                      <div className="text-sm opacity-70">Now playing</div>
-                      <div className="font-semibold line-clamp-2">{nowPlaying.title}</div>
-                    </div>
-                  </div>
-                  {/* (5) Big QR here too */}
-                  <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>setShowQr(true)}>QR</button>
-                </div>
-              </div>
-            )}
-            <ul className="space-y-2">
-              {(queue||[]).map(item=>(
-                <li key={item.id} className="p-2 bg-slate-900/60 rounded-xl border border-slate-800 flex items-center gap-3">
-                  <img src={item.thumb} className="w-16 h-10 rounded object-cover" />
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium line-clamp-2">{item.title}</div>
-                    <div className="text-xs opacity-60">Added by {item.addedBy}</div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>vote(item.id,+1)}>▲</button>
-                    <span className="w-6 text-center">{item.votes||0}</span>
-                    <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>vote(item.id,-1)}>▼</button>
-                  </div>
-                </li>
-              ))}
-              {(!queue || queue.length===0) && <div className="text-sm opacity-70">Queue is empty. Search and add some tracks!</div>}
-            </ul>
-          </div>
-
-          {/* Inline preview player */}
-          {previewId && (
-            <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
-              <div className="flex items-center justify-between mb-2">
-                <h2 className="text-lg font-bold">Preview player</h2>
-                <button className="text-sm underline" onClick={()=>setPreviewId("")}>Close</button>
-              </div>
-              <div className="aspect-video w-full bg-black rounded overflow-hidden">
-                <iframe
-                  src={`https://www.youtube.com/embed/${previewId}?autoplay=1`}
-                  title="YouTube player"
-                  className="w-full h-full"
-                  allow="autoplay; encrypted-media"
-                  referrerPolicy="strict-origin-when-cross-origin"
-                />
-              </div>
-            </div>
-          )}
-        </section>
-
-        {/* Right: Settings & Host player */}
-        <section className="space-y-6">
-          <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
-            <h2 className="text-lg font-bold mb-2">Settings</h2>
-            <details className="mt-1">
-              <summary className="cursor-pointer text-sm opacity-80">Firebase config (advanced)</summary>
-              <textarea className="mt-2 w-full px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 outline-none"
-                        rows={6}
-                        placeholder="(Optional) Paste JSON to override the baked config"
-                        value={fbConfig} onChange={(e)=>setFbConfig(e.target.value)} />
-              <p className="mt-2 text-xs opacity-70">Guests don’t need to paste anything.</p>
-            </details>
-            <button
-              className="mt-3 px-3 py-2 rounded-xl border border-slate-700 hover:bg-slate-800/50 text-sm"
-              onClick={resetApp}
-            >
-              Reset app (clear saved settings)
-            </button>
-          </div>
-
-          {isHost && (
-            <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
-              <h2 className="text-lg font-bold mb-2">Host Player</h2>
-              <div className="text-xs opacity-70 mb-2">Keep this tab open. Audio routes to your paired Bluetooth speaker.</div>
-              <div ref={ytRef} />
-              <div className="grid grid-cols-2 gap-2 mt-3">
-                <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold" onClick={startNext}>
-                  Play top voted / Skip
-                </button>
-                <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={togglePause}>
-                  {paused ? "Resume" : "Pause"}
-                </button>
-              </div>
-            </div>
-          )}
-        </section>
-      </main>
-
-      {/* --- QR modal --- */}
-      {showQr && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-4 w-full max-w-sm">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-lg font-bold">Scan to join</h3>
-              <button className="text-sm underline" onClick={()=>setShowQr(false)}>Close</button>
-            </div>
-            <div className="w-full flex items-center justify-center">
-              <img src={qrSrc} alt="Room QR" className="rounded-xl border border-slate-800" />
-            </div>
-            <div className="mt-3 text-xs break-all opacity-80">{roomUrl}</div>
-            <div className="mt-3 flex gap-2">
-              <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={copyLink}>Copy link</button>
-              <a className="px-3 py-2 rounded-xl border border-slate-700 text-center"
-                 href={qrSrc} download={`party-dj-${roomCode||"room"}.png`}>
-                Download QR
-              </a>
-            </div>
-            {!roomCode && <div className="mt-3 text-xs text-rose-300">Tip: set a ROOM code or click Create first.</div>}
-          </div>
-        </div>
-      )}
-
-      <footer className="max-w-6xl mx-auto px-4 pb-8 text-xs opacity-60">
-        Built for quick parties. Respect copyright & venue licensing.
-      </footer>
-    </div>
-  );
-}
