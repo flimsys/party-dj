@@ -409,4 +409,4 @@ export default function App(){
                     <span className="w-6 text-center">{item.votes||0}</span>
                     <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>vote(item.id,-1)}>▼</button>
                   </div>
-                </li
+                </li>
