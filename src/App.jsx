@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — YouTube + Firebase Queue (ESM CDN + baked Firebase config + QR + Reset) **/
+/** Party DJ — Firebase baked, QR, Serverless YouTube Search (no keys on client) **/
 
 // ---- quick reset by URL: add ?reset=1 ----
 (function hardResetViaUrl() {
@@ -76,8 +76,7 @@ const DEFAULT_FB_CFG = {
 
 // ---------- app ----------
 export default function App() {
-  // YouTube
-  const [ytKey, setYtKey] = useLocalSetting("pdj_yt_key", "");
+  // YouTube search (via serverless function)
   const [search, setSearch] = useState("");
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -87,17 +86,13 @@ export default function App() {
   async function runSearch() {
     setError("");
     setResults([]);
-    if (!ytKey) { setError("Only the DJ needs a YouTube key to search. Guests can still vote."); return; }
     if (!search.trim()) return;
     try {
       setLoading(true);
-      const url = new URL("https://www.googleapis.com/youtube/v3/search");
-      url.searchParams.set("part","snippet");
-      url.searchParams.set("type","video");
-      url.searchParams.set("maxResults","12");
-      url.searchParams.set("q", search.trim());
-      url.searchParams.set("key", ytKey);
-      const res = await fetch(url);
+      const res = await fetch(
+        `/.netlify/functions/youtube-search?q=${encodeURIComponent(search.trim())}`
+      );
+      if (!res.ok) throw new Error("Search function error");
       const data = await res.json();
       const items = (data?.items||[]).map(it=>({
         id: it?.id?.videoId || "",
@@ -108,11 +103,11 @@ export default function App() {
       if (!items.length) setError("No results. Try a different search.");
     } catch (e) {
       console.error(e);
-      setError("YouTube search failed. Check the key or quota.");
+      setError("Search failed. (Server function) Check deploy/env var.");
     } finally { setLoading(false); }
   }
 
-  // Firebase config
+  // Firebase config (baked, but allow override in Settings)
   const [fbConfig, setFbConfig] = useLocalSetting("pdj_fb_config", "");
   const fbCfg = useMemo(() => parseFirebaseJson(fbConfig) || DEFAULT_FB_CFG, [fbConfig]);
 
@@ -160,7 +155,7 @@ export default function App() {
 
   const rQueue = useRef(null), rNow = useRef(null), rCtl = useRef(null);
 
-  // Shareable room link (keeps ?room=XXXX when you type/set it)
+  // Shareable room link (keeps ?room=XXXX when you set it)
   const roomUrl = useMemo(() => {
     const u = new URL(window.location.href);
     if (roomCode) u.searchParams.set("room", roomCode);
@@ -168,11 +163,10 @@ export default function App() {
     return u.toString();
   }, [roomCode]);
 
-  // --- QR state ---
+  // QR state
   const [showQr, setShowQr] = useState(false);
   const qrSrc = useMemo(() => {
     const url = roomUrl || window.location.href;
-    // Simple, dependency-free QR via public image endpoint:
     return `https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(url)}`;
   }, [roomUrl]);
   const copyLink = async () => {
@@ -276,6 +270,7 @@ export default function App() {
     try { paused ? ytPlayer.current.pauseVideo() : ytPlayer.current.playVideo(); } catch {}
   }, [paused, isHost]);
 
+  // Auto-join if ?room=XXXX in URL
   useEffect(() => {
     if (!fdb) return;
     const url = new URL(window.location.href);
@@ -285,8 +280,8 @@ export default function App() {
 
   // Reset button
   function resetApp() {
-    if (!window.confirm('Clear saved keys (YouTube + Firebase) and reset the app?')) return;
-    ['pdj_fb_config','pdj_yt_key','pdj_is_host','pdj_room','pdj_name'].forEach(k=>{ try{localStorage.removeItem(k);}catch{} });
+    if (!window.confirm('Clear saved data and reset the app?')) return;
+    ['pdj_fb_config','pdj_is_host','pdj_room','pdj_name'].forEach(k=>{ try{localStorage.removeItem(k);}catch{} });
     try { localStorage.clear(); } catch {}
     location.reload();
   }
@@ -319,7 +314,7 @@ export default function App() {
                 Create
               </button>
 
-              {/* New: QR button */}
+              {/* QR button */}
               <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={()=>setShowQr(true)}>
                 Show QR
               </button>
@@ -422,10 +417,7 @@ export default function App() {
         <section className="space-y-6">
           <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
             <h2 className="text-lg font-bold mb-2">Settings</h2>
-            <label className="text-sm opacity-80">YouTube Data API key (DJ only)</label>
-            <input className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 outline-none"
-                   placeholder="Only DJ needs this — AIza…" value={ytKey} onChange={(e)=>setYtKey(e.target.value)} />
-            <details className="mt-3">
+            <details className="mt-1">
               <summary className="cursor-pointer text-sm opacity-80">Firebase config (advanced)</summary>
               <textarea className="mt-2 w-full px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 outline-none"
                         rows={6}
