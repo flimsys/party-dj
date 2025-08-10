@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — YouTube + Firebase Queue (ESM CDN + baked Firebase config + Reset) **/
+/** Party DJ — YouTube + Firebase Queue (ESM CDN + baked Firebase config + QR + Reset) **/
 
 // ---- quick reset by URL: add ?reset=1 ----
 (function hardResetViaUrl() {
@@ -62,7 +62,7 @@ function parseFirebaseJson(str) {
   return null;
 }
 
-/** ✅ Bake your Firebase config here so guests don't paste it */
+/** ✅ Baked Firebase config so guests don't paste anything */
 const DEFAULT_FB_CFG = {
   "apiKey": "AIzaSyBqKvl9Hh47gg-9vf82bh64Wh9PJm-PfRI",
   "authDomain": "party-dj-6ccc4.firebaseapp.com",
@@ -115,9 +115,8 @@ export default function App() {
   // Firebase config
   const [fbConfig, setFbConfig] = useLocalSetting("pdj_fb_config", "");
   const fbCfg = useMemo(() => parseFirebaseJson(fbConfig) || DEFAULT_FB_CFG, [fbConfig]);
-  const needsFirebase = !fbCfg; // will be false because DEFAULT_FB_CFG exists
 
-  // Firebase (ESM CDN modules) — loaded only when config is present (it is)
+  // Firebase (ESM CDN modules)
   const [fdb, setFdb] = useState(null); // { db, ref, child, onValue, set, update, runTransaction, remove }
   useEffect(() => {
     let cancelled = false;
@@ -160,6 +159,26 @@ export default function App() {
   const [paused, setPaused] = useState(false);
 
   const rQueue = useRef(null), rNow = useRef(null), rCtl = useRef(null);
+
+  // Shareable room link (keeps ?room=XXXX when you type/set it)
+  const roomUrl = useMemo(() => {
+    const u = new URL(window.location.href);
+    if (roomCode) u.searchParams.set("room", roomCode);
+    else u.searchParams.delete("room");
+    return u.toString();
+  }, [roomCode]);
+
+  // --- QR state ---
+  const [showQr, setShowQr] = useState(false);
+  const qrSrc = useMemo(() => {
+    const url = roomUrl || window.location.href;
+    // Simple, dependency-free QR via public image endpoint:
+    return `https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(url)}`;
+  }, [roomUrl]);
+  const copyLink = async () => {
+    try { await navigator.clipboard.writeText(roomUrl); alert("Link copied!"); }
+    catch { prompt("Copy this link", roomUrl); }
+  };
 
   const joinRoom = async (code) => {
     if (!fdb?.db) { alert("Firebase not ready. Reload the page."); return; }
@@ -257,12 +276,6 @@ export default function App() {
     try { paused ? ytPlayer.current.pauseVideo() : ytPlayer.current.playVideo(); } catch {}
   }, [paused, isHost]);
 
-  // Shareable room link & auto-join
-  const roomUrl = useMemo(() => {
-    const u = new URL(window.location.href);
-    u.searchParams.set("room", roomCode || "");
-    return u.toString();
-  }, [roomCode]);
   useEffect(() => {
     if (!fdb) return;
     const url = new URL(window.location.href);
@@ -305,6 +318,12 @@ export default function App() {
               <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={createRoom}>
                 Create
               </button>
+
+              {/* New: QR button */}
+              <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={()=>setShowQr(true)}>
+                Show QR
+              </button>
+
               <label className="ml-auto inline-flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={isHost}
                   onChange={(e)=>{ setIsHost(e.target.checked); localStorage.setItem("pdj_is_host", e.target.checked?"1":"0"); }} />
@@ -434,6 +453,30 @@ export default function App() {
           )}
         </section>
       </main>
+
+      {/* --- QR modal --- */}
+      {showQr && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-4 w-full max-w-sm">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-bold">Scan to join</h3>
+              <button className="text-sm underline" onClick={()=>setShowQr(false)}>Close</button>
+            </div>
+            <div className="w-full flex items-center justify-center">
+              <img src={qrSrc} alt="Room QR" className="rounded-xl border border-slate-800" />
+            </div>
+            <div className="mt-3 text-xs break-all opacity-80">{roomUrl}</div>
+            <div className="mt-3 flex gap-2">
+              <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={copyLink}>Copy link</button>
+              <a className="px-3 py-2 rounded-xl border border-slate-700 text-center"
+                 href={qrSrc} download={`party-dj-${roomCode||"room"}.png`}>
+                Download QR
+              </a>
+            </div>
+            {!roomCode && <div className="mt-3 text-xs text-rose-300">Tip: set a ROOM code or click Create first.</div>}
+          </div>
+        </div>
+      )}
 
       <footer className="max-w-6xl mx-auto px-4 pb-8 text-xs opacity-60">
         Built for quick parties. Respect copyright & venue licensing.
