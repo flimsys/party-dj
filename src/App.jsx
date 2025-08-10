@@ -157,7 +157,7 @@ export default function App(){
   const [queue, setQueue] = useState([]); const [nowPlaying, setNowPlaying] = useState(null);
   const [paused, setPaused] = useState(false);
   const [activeCount, setActiveCount] = useState(0); // 👥 active listeners (presence)
-  const requiredSkip = SKIP_THRESHOLD(activeCount);
+  const requiredSkip = Math.max(1, Math.ceil(activeCount * 0.5));
 
   // skip vote map
   const [skipMap, setSkipMap] = useState({}); const skipCount = Object.keys(skipMap||{}).length;
@@ -410,3 +410,73 @@ export default function App(){
                     <button className="px-2 py-1 rounded-lg border border-slate-700" onClick={()=>vote(item.id,-1)}>▼</button>
                   </div>
                 </li>
+              ))}
+              {(!queue || queue.length===0) && <div className="text-sm opacity-70">Queue is empty. Search and add some tracks!</div>}
+            </ul>
+          </div>
+
+          {/* Inline preview */}
+          {previewId && (
+            <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="text-lg font-bold">Preview player</h2>
+                <button className="text-sm underline" onClick={()=>setPreviewId("")}>Close</button>
+              </div>
+              <div className="aspect-video w-full bg-black rounded overflow-hidden">
+                <iframe src={`https://www.youtube.com/embed/${previewId}?autoplay=1`} title="YouTube player" className="w-full h-full" allow="autoplay; encrypted-media" referrerPolicy="strict-origin-when-cross-origin" />
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* Right column: Settings & Host Player */}
+        <section className="space-y-6">
+          <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
+            <h2 className="text-lg font-bold mb-2">Settings</h2>
+            <details className="mt-1">
+              <summary className="cursor-pointer text-sm opacity-80">Firebase config (advanced)</summary>
+              <textarea className="mt-2 w-full px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-700 outline-none" rows={6} placeholder="(Optional) Paste JSON to override the baked config" value={fbConfig} onChange={(e)=>setFbConfig(e.target.value)} />
+              <p className="mt-2 text-xs opacity-70">Guests don’t need to paste anything.</p>
+            </details>
+            <button className="mt-3 px-3 py-2 rounded-xl border border-slate-700 hover:bg-slate-800/50 text-sm" onClick={resetApp}>Reset app (clear saved settings)</button>
+          </div>
+
+          {isHost && (
+            <div className="p-4 bg-slate-900/40 rounded-2xl border border-slate-800 shadow-sm">
+              <h2 className="text-lg font-bold mb-2">Host Player</h2>
+              <div className="text-xs opacity-70 mb-2">Keep this tab open. Audio routes to your paired Bluetooth speaker.</div>
+              <div ref={ytRef} />
+              <div className="grid grid-cols-2 gap-2 mt-3">
+                <button className="px-3 py-2 rounded-xl bg-white text-slate-900 font-semibold" onClick={startNext}>Play top voted / Skip</button>
+                <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={togglePause}>{paused? "Resume":"Pause"}</button>
+              </div>
+            </div>
+          )}
+        </section>
+      </main>
+
+      {/* QR modal */}
+      {showQr && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-4 w-full max-w-sm">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-bold">Scan to join</h3>
+              <button className="text-sm underline" onClick={()=>setShowQr(false)}>Close</button>
+            </div>
+            <div className="w-full flex items-center justify-center">
+              <img src={qrSrc} alt="Room QR" className="rounded-xl border border-slate-800" />
+            </div>
+            <div className="mt-3 text-xs break-all opacity-80">{roomUrl}</div>
+            <div className="mt-3 flex gap-2">
+              <button className="px-3 py-2 rounded-xl border border-slate-700" onClick={copyLink}>Copy link</button>
+              <a className="px-3 py-2 rounded-xl border border-slate-700 text-center" href={qrSrc} download={`party-dj-${roomCode||"room"}.png`}>Download QR</a>
+            </div>
+            {!roomCode && <div className="mt-3 text-xs text-rose-300">Tip: set a ROOM code or click Create first.</div>}
+          </div>
+        </div>
+      )}
+
+      <footer className="max-w-6xl mx-auto px-4 pb-8 text-xs opacity-60">Built for quick parties. Respect copyright & venue licensing.</footer>
+    </div>
+  );
+}
