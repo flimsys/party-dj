@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** Party DJ — favorites now per-session + auto-DJ on first load
- * - Favorites are stored in sessionStorage (clear when app/browser restarts).
- * - “I’m the DJ” checkbox is auto-checked for DJ view (and unchecked for guests).
- * - All other features unchanged: chat, presence, skip votes, QR, etc.
+/** Party DJ — per-person “Show video” toggle
+ * - Adds a checkbox in the Queue card to show/hide the Now Playing video locally.
+ * - Uses sessionStorage so each person’s choice resets when they restart the app.
+ * - Keeps existing features: chat, favorites (per session), presence, skip votes, QR, etc.
  */
 
 (function hardResetViaUrl() {
@@ -44,6 +44,11 @@ function useSessionSetting(key, initial = "") {
   const [v, setV] = useState(() => sessionStorage.getItem(key) ?? initial);
   useEffect(() => { try { sessionStorage.setItem(key, v ?? ""); } catch {} }, [key, v]);
   return [v, setV];
+}
+function useSessionBool(key, initial=false){
+  const [b,setB]=useState(()=> (sessionStorage.getItem(key) ?? (initial?"1":"0"))==="1");
+  useEffect(()=>{ try{ sessionStorage.setItem(key, b?"1":"0"); }catch{} },[b]);
+  return [b,setB];
 }
 function useToast() {
   const [msg, setMsg] = useState("");
@@ -380,6 +385,9 @@ export default function App(){
   const namesPreview = activeNames.slice(0,3).join(", ");
   const moreNames = Math.max(0, activeNames.length - 3);
 
+  // ✅ New: per-person “Show video” toggle stored in session
+  const [showVideo, setShowVideo] = useSessionBool("pdj_showVideo", false);
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       {toast.msg && <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 px-3 py-2 rounded-xl border border-slate-700 bg-slate-900/90 text-sm">{toast.msg}</div>}
@@ -570,7 +578,28 @@ export default function App(){
                       </div>
                     </div>
                   </div>
+
+                  {/* ✅ New: local show video switch */}
+                  <label className="ml-3 inline-flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={showVideo} onChange={(e)=>setShowVideo(e.target.checked)} />
+                    Show video (local)
+                  </label>
                 </div>
+
+                {showVideo && nowPlaying?.id && (
+                  <div className="mt-3 rounded-xl overflow-hidden border border-slate-800">
+                    <div className="aspect-video w-full bg-black">
+                      <iframe
+                        src={`https://www.youtube.com/embed/${(nowPlaying.id||"").split(":").pop()}?autoplay=1&mute=1&controls=1`}
+                        title="Now playing"
+                        className="w-full h-full"
+                        allow="autoplay; encrypted-media"
+                        referrerPolicy="strict-origin-when-cross-origin"
+                      />
+                    </div>
+                    <div className="text-[11px] opacity-60 p-2">Muted by default to avoid echo. Use the YouTube controls to unmute on your device if you want audio.</div>
+                  </div>
+                )}
               </div>
             )}
 
